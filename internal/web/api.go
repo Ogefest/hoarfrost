@@ -33,17 +33,21 @@ type apiPage struct {
 	Authors     []string        `json:"authors,omitempty"`
 	SchemaTypes []string        `json:"schemaTypes,omitempty"`
 	SchemaOrg   json.RawMessage `json:"schemaOrg,omitempty"`
-	Source      string          `json:"source"`
-	Engine      string          `json:"engine"`
-	Kind        string          `json:"kind"`
-	Mime        string          `json:"mime,omitempty"`
-	Status      int             `json:"status,omitempty"`
-	TextLength  int             `json:"textLength"`
-	Storage     string          `json:"storage"`
-	Epoch       string          `json:"epoch"`
-	RecordID    string          `json:"recordId,omitempty"`
-	Links       apiLinks        `json:"links"`
-	Text        string          `json:"text,omitempty"`
+	OpenGraph   json.RawMessage `json:"openGraph,omitempty"`
+	// Microformats is the JSON array of microformats2 items.
+	Microformats json.RawMessage `json:"microformats,omitempty"`
+	Keywords     []string        `json:"keywords,omitempty"`
+	Source       string          `json:"source"`
+	Engine       string          `json:"engine"`
+	Kind         string          `json:"kind"`
+	Mime         string          `json:"mime,omitempty"`
+	Status       int             `json:"status,omitempty"`
+	TextLength   int             `json:"textLength"`
+	Storage      string          `json:"storage"`
+	Epoch        string          `json:"epoch"`
+	RecordID     string          `json:"recordId,omitempty"`
+	Links        apiLinks        `json:"links"`
+	Text         string          `json:"text,omitempty"`
 }
 
 type apiLinks struct {
@@ -51,6 +55,14 @@ type apiLinks struct {
 	Content string `json:"content,omitempty"`
 	HTML    string `json:"html,omitempty"`
 	Record  string `json:"record,omitempty"`
+}
+
+// rawJSON omits empty JSON values.
+func rawJSON(v json.RawMessage) json.RawMessage {
+	if len(v) == 0 || string(v) == "null" {
+		return nil
+	}
+	return v
 }
 
 // captureID is the stable identifier of a capture: the UUID of its WARC
@@ -64,9 +76,7 @@ func toAPI(p index.Page) apiPage {
 		Captured: p.Captured, Published: p.Published, Authors: p.Authors, SchemaTypes: p.SchemaTypes, Source: p.Source,
 		Engine: p.Engine, Kind: p.Kind, Mime: p.Mime, Status: p.Status, TextLength: p.TextLen, Storage: p.Storage,
 		Epoch: string(p.Epoch), RecordID: p.RecordID}
-	if len(p.SchemaOrg) > 0 && string(p.SchemaOrg) != "null" {
-		out.SchemaOrg = p.SchemaOrg
-	}
+	out.SchemaOrg, out.OpenGraph, out.Microformats, out.Keywords = rawJSON(p.SchemaOrg), rawJSON(p.OpenGraph), rawJSON(p.Microformats), p.Keywords
 	out.Links.Self = "/api/pages/" + out.CaptureID
 	if p.RecordID != "" {
 		out.Links.Content = out.Links.Self + "/content"

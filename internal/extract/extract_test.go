@@ -181,7 +181,7 @@ func TestStructuredData(t *testing.T) {
 }
 
 func TestStructuredDataFallbacksAndLimits(t *testing.T) {
-	s := StructuredData([]byte(`<html><head><meta property="og:description" content="Z OG"></head><body></body></html>`), "text/html")
+	s := StructuredData([]byte(`<html><head><meta property="og:description" content="Z OG"></head><body></body></html>`), "text/html", "")
 	if s.Description != "Z OG" || len(s.SchemaOrg) != 0 {
 		t.Errorf("%+v", s)
 	}
@@ -191,7 +191,7 @@ func TestStructuredDataFallbacksAndLimits(t *testing.T) {
 		fmt.Fprintf(&b, `<script type="application/ld+json">{"@context":"https://schema.org","@type":"Thing","name":"%d","x":"%s"}</script>`, i, strings.Repeat("a", 4000))
 	}
 	b.WriteString(`</head></html>`)
-	s = StructuredData([]byte(b.String()), "text/html")
+	s = StructuredData([]byte(b.String()), "text/html", "")
 	if n := len(s.SchemaOrg); n == 0 || n > maxSchemaObjects {
 		t.Errorf("%d objects", n)
 	}
@@ -202,5 +202,80 @@ func TestStructuredDataFallbacksAndLimits(t *testing.T) {
 	}
 	if size > maxSchemaBytes {
 		t.Errorf("%d bytes kept", size)
+	}
+}
+
+func TestOpenGraphMicroformatsAndKeywords(t *testing.T) {
+	body, err := os.ReadFile("testdata/metadata.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := StructuredData(body, "text/html; charset=utf-8", "https://news.example.com/news/budget?x=1")
+
+	if s.OpenGraph["og:type"] != "article" || s.OpenGraph["twitter:card"] != "summary_large_image" {
+		t.Errorf("open graph %v", s.OpenGraph)
+	}
+	if imgs := OpenGraphValues(s.OpenGraph, "og:image"); len(imgs) != 2 || imgs[1] != "https://news.example.com/b.jpg" {
+		t.Errorf("repeated property %v", imgs)
+	}
+	if _, ok := s.OpenGraph["fb:app_id"]; ok {
+		t.Error("fb: properties are not Open Graph data")
+	}
+
+	if len(s.Microformats) != 1 {
+		t.Fatalf("microformats %v", s.Microformats)
+	}
+	entry := s.Microformats[0]
+	props := entry["properties"].(map[string]any)
+	if got := props["url"].([]any)[0]; got != "https://news.example.com/budget" {
+		t.Errorf("relative u-url not resolved: %v", got)
+	}
+	content := props["content"].([]any)[0].(map[string]any)
+	if _, ok := content["html"]; ok || content["value"] != "The city council approved the budget." {
+		t.Errorf("e-content %v", content)
+	}
+	if got := MicroformatTypes(s.Microformats); strings.Join(got, ",") != "h-card,h-entry" {
+		t.Errorf("types %v", got)
+	}
+
+	want := "Local government,budget,City,City council,Łódź,elections,finance"
+	if got := strings.Join(s.Keywords, ","); got != want {
+		t.Errorf("keywords %s, want %s", got, want)
+	}
+	if got := strings.Join(s.Authors(), ","); got != "Tom Smith,Ola Nowak" {
+		t.Errorf("authors %s", got)
+	}
+	if got := PublishedDates(s.SchemaOrg, s.OpenGraph, s.Microformats); strings.Join(got, ",") != "2026-10-07T09:30:00Z,2026-10-06T12:00:00Z" {
+		t.Errorf("dates %v", got)
+	}
+
+	items := Items(s.SchemaOrg, s.Microformats)
+	var got []string
+	for _, it := range items {
+		parent := "-"
+		if it.Parent >= 0 {
+			parent = items[it.Parent].Types[0]
+		}
+		got = append(got, it.Format+":"+it.Types[0]+"<"+parent+"."+it.Property)
+	}
+	if strings.Join(got, " ") != "schema.org:NewsArticle<-. microformats2:h-entry<-. microformats2:h-card<h-entry.author" {
+		t.Errorf("items %v", got)
+	}
+}
+
+func TestItemsNestedSchemaOrg(t *testing.T) {
+	body, err := os.ReadFile("testdata/structured.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := StructuredData(body, "text/html", "")
+	var got []string
+	for _, it := range Items(s.SchemaOrg, nil) {
+		got = append(got, it.Types[0]+"."+it.Property)
+	}
+	// Persons and the publisher inside the article, the place of the event.
+	want := "NewsArticle. Person.author Person.author Organization.publisher BreadcrumbList. Event. Place.location Person."
+	if strings.Join(got, " ") != want {
+		t.Errorf("items %s", strings.Join(got, " "))
 	}
 }

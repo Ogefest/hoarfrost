@@ -204,7 +204,8 @@ The recorder:
 - starts every file with a `warcinfo` record (software version, engine,
   worker, epoch, source, block list version) and adds a `metadata` record per
   page (engine, fallback, timings, extracted text, title, publication date,
-  description, authors, schema.org objects);
+  description, authors, keywords, and the page's structured data: schema.org
+  objects, Open Graph and Twitter Card properties, microformats2 items);
 - on close produces the file, its CDXJ lines and the list of records for the
   index.
 
@@ -255,7 +256,9 @@ The PostgreSQL database has two schemas:
 - `archive_index` – **derived**: files, WARC records with their locations
   (`location`, `offset`, `length`), URLs with the metadata of their latest
   capture, pages with full-text search (`tsvector`, diacritics folded, title
-  weighted above description and text), epochs and statistics. Its schema
+  weighted above description and keywords, then text), the structured data
+  of pages in browsable tables (`page_items`, `page_properties`,
+  `page_keywords`), epochs and statistics. Its schema
   has a version; an index with another version is dropped and rebuilt from
   storage on start.
 - `app` – **operational state** that cannot be rebuilt: users, sessions, API

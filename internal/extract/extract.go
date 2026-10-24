@@ -82,7 +82,7 @@ func HTML(body []byte, contentType, pageURL string) Result {
 	if u, err := url.Parse(pageURL); err == nil && u.Host != "" {
 		opts.OriginalURL = u
 	}
-	res := Result{Structured: StructuredData([]byte(src), "text/html; charset=utf-8")}
+	res := Result{Structured: StructuredData([]byte(src), "text/html; charset=utf-8", pageURL)}
 	if out, err := trafilatura.Extract(strings.NewReader(src), opts); err == nil && out != nil {
 		res.Title = strings.TrimSpace(out.Metadata.Title)
 		res.Text = normalizeSpace(out.ContentText)

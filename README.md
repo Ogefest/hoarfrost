@@ -61,9 +61,11 @@ through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
   single range request.
 - **Verification** of every package (hashes, digests, revisit targets,
   stored entries) after sealing and on demand.
-- **Structured data**: meta description and schema.org objects (JSON-LD,
-  microdata, RDFa) of every page, kept per URL in the database and per week
-  in a Parquet page table next to the package, sorted by URL.
+- **Structured data** of every page: schema.org objects (JSON-LD,
+  microdata, RDFa), Open Graph and Twitter Card properties, microformats2
+  items (`h-entry`, `h-card`…) and keywords, stored in the archive, exposed
+  by the API, browsable in SQL tables and kept per week in a Parquet page
+  table next to the package; filter the archive by keyword.
 - **Full-text search** (PostgreSQL, diacritics-insensitive), timeline of
   captures per URL, quick preview (single HTML with `data:` URIs, sandboxed),
   HTML export, raw WARC record download, full replay with ReplayWeb.page.

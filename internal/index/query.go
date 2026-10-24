@@ -21,6 +21,8 @@ type SearchQuery struct {
 	Source  string
 	Domain  string
 	Kind    string
+	// Keyword matches pages tagged with it, ignoring case and diacritics.
+	Keyword string
 	From    time.Time
 	To      time.Time
 	Limit   int
@@ -44,18 +46,18 @@ func FTSQuery(q string) string {
 
 const pageCols = `p.page_id, p.metadata_id, coalesce(p.record_id,''), p.url_id, p.storage, p.epoch, p.uri, coalesce(p.title,''),
 	coalesce(p.description,''), p.captured, p.published, coalesce(array_to_json(p.authors)::text,'[]'),
-	coalesce(array_to_json(p.schema_types)::text,'[]'), p.schema_org::text,
-	coalesce(p.source,''), coalesce(p.engine,''), coalesce(p.kind,''), coalesce(p.mime,''),
+	coalesce(array_to_json(p.schema_types)::text,'[]'), p.schema_org::text, p.open_graph::text, p.microformats::text,
+	coalesce(array_to_json(p.keywords)::text,'[]'), coalesce(p.source,''), coalesce(p.engine,''), coalesce(p.kind,''), coalesce(p.mime,''),
 	coalesce(p.status,0), p.fallback, p.text_len, p.resources, p.file, p.location, p."offset", p.length`
 
 func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 	var p Page
 	var ep string
 	var published sql.NullTime
-	var schemaOrg sql.NullString
-	var authors, types string
+	var schemaOrg, openGraph, microformats sql.NullString
+	var authors, types, keywords string
 	err := row.Scan(&p.ID, &p.MetadataID, &p.RecordID, &p.URLID, &p.Storage, &ep, &p.URI, &p.Title, &p.Description, &p.Captured, &published,
-		&authors, &types, &schemaOrg, &p.Source, &p.Engine, &p.Kind, &p.Mime, &p.Status, &p.Fallback, &p.TextLen, &p.Resources,
+		&authors, &types, &schemaOrg, &openGraph, &microformats, &keywords, &p.Source, &p.Engine, &p.Kind, &p.Mime, &p.Status, &p.Fallback, &p.TextLen, &p.Resources,
 		&p.File, &p.Location, &p.Offset, &p.Length)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
@@ -63,6 +65,13 @@ func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 	p.Epoch, p.Captured = epoch.ID(ep), p.Captured.UTC()
 	_ = json.Unmarshal([]byte(authors), &p.Authors) // written by AddCapture; a bad value only hides the list
 	_ = json.Unmarshal([]byte(types), &p.SchemaTypes)
+	_ = json.Unmarshal([]byte(keywords), &p.Keywords)
+	if openGraph.Valid {
+		p.OpenGraph = json.RawMessage(openGraph.String)
+	}
+	if microformats.Valid {
+		p.Microformats = json.RawMessage(microformats.String)
+	}
 	if published.Valid {
 		p.Published = published.Time.UTC().Format(time.DateOnly)
 	}
@@ -132,6 +141,10 @@ func (q SearchQuery) filters() ([]string, []any) {
 	if q.Kind != "" {
 		where = append(where, `p.kind = ?`)
 		args = append(args, q.Kind)
+	}
+	if k := KeywordKey(q.Keyword); k != "" {
+		where = append(where, `EXISTS (SELECT 1 FROM page_keywords k WHERE k.page_id = p.page_id AND k.key = ?)`)
+		args = append(args, k)
 	}
 	if d := strings.ToLower(strings.TrimSpace(q.Domain)); d != "" {
 		where = append(where, `(p.uri LIKE ? OR p.uri LIKE ? OR p.uri LIKE ? OR p.uri LIKE ?)`)
@@ -386,9 +399,17 @@ func (d *DB) Dump(ctx context.Context) (string, error) {
 		`SELECT 'record', record_id, storage, epoch, uri, date::text, type, mime, status, digest, refers_to, location, "offset", length, file FROM records ORDER BY record_id`,
 		`SELECT 'page', metadata_id, coalesce(record_id,''), storage, epoch, uri, coalesce(title,''), coalesce(description,''), captured::text,
 			coalesce(published::text,''), coalesce(authors::text,''), coalesce(schema_types::text,''), coalesce(schema_org::text,''),
+			coalesce(open_graph::text,''), coalesce(microformats::text,''), coalesce(keywords::text,''),
 			coalesce(source,''), coalesce(engine,''), coalesce(kind,''), coalesce(mime,''), coalesce(status,0), fallback, text_len, resources, file,
 			location, "offset", length
 			FROM pages ORDER BY metadata_id`,
+		`SELECT 'item', p.metadata_id, i.position, i.format, i.type, i.types::text, coalesce(i.property,''),
+			coalesce((SELECT parent.position FROM page_items parent WHERE parent.item_id = i.parent_id), -1), i.data::text
+			FROM page_items i JOIN pages p USING (page_id) ORDER BY p.metadata_id, i.position`,
+		`SELECT 'property', p.metadata_id, o.format, o.name, o.position, o.value
+			FROM page_properties o JOIN pages p USING (page_id) ORDER BY p.metadata_id, o.name, o.position`,
+		`SELECT 'keyword', p.metadata_id, k.key, k.keyword, k.position
+			FROM page_keywords k JOIN pages p USING (page_id) ORDER BY p.metadata_id, k.key`,
 		`SELECT 'epoch', storage, epoch, state, coalesce(wacz_key,''), coalesce(sha256,''), coalesce(size,0) FROM epochs ORDER BY storage, epoch`,
 		`SELECT 'url', storage, uri, last_captured::text, coalesce(title,''), coalesce(description,''), coalesce(published::text,''),
 			coalesce(authors::text,''), coalesce(schema_types::text,''), coalesce(schema_org::text,'')

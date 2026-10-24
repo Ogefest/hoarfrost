@@ -8,7 +8,7 @@ request  http://site/img/bg.png GET /img/bg.png HTTP/1.1
 request  http://site/img/logo.png GET /img/logo.png HTTP/1.1
 request  http://site/img/logo2x.png GET /img/logo2x.png HTTP/1.1
 request  http://site/news/article2.html GET /news/article2.html HTTP/1.1
-response http://site/news/article2.html 200 text/html; charset=utf-8 sha1:FPB2LU5INMXBRN5ZVA7VBWNU33IYDMCU
+response http://site/news/article2.html 200 text/html; charset=utf-8 sha1:42KALO6YDETPA2CUQFIO26ZQ6MDT37Z5
 revisit  http://site/css/fonts.css 200 text/css sha1:VZ6DLX2Z664553RKTDARRBDKA6DSTPS2 -> http://site/css/fonts.css
 revisit  http://site/css/main.css 200 text/css sha1:W3QGBYLS36KQTCKDYEROO2I5GKFFXQJG -> http://site/css/main.css
 revisit  http://site/css/print.css 200 text/css sha1:OKUWDZB3525LL6N5TU655RHDI3JEQDKP -> http://site/css/print.css

@@ -21,8 +21,8 @@ a lost secret cannot be shown again; revoke it and create a new one.
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/api/pages?after=&limit=&source=&storage=&domain=&kind=&from=&to=` | key, viewer | pages in the order they were archived, after a cursor; JSON `{results, next}` |
-| GET | `/api/search?q=&source=&storage=&domain=&kind=&from=&to=&limit=&offset=` | key, viewer | full-text search, newest or best match first; JSON `{total, results}` |
+| GET | `/api/pages?after=&limit=&source=&storage=&domain=&kind=&keyword=&from=&to=` | key, viewer | pages in the order they were archived, after a cursor; JSON `{results, next}` |
+| GET | `/api/search?q=&source=&storage=&domain=&kind=&keyword=&from=&to=&limit=&offset=` | key, viewer | full-text search, newest or best match first; JSON `{total, results}` |
 | GET | `/api/facets` | key, viewer | values for the filters: `sources` (with page counts), `storages`, `kinds` |
 | GET | `/api/pages/{id}` | key, viewer | page metadata with extracted text |
 | GET | `/api/pages/{id}/content` | key, viewer | the captured file as archived (HTML, PDF, image…) with its content type |
@@ -36,7 +36,9 @@ a lost secret cannot be shown again; revoke it and create a new one.
 changes, while numeric ids are reassigned when a week is reindexed.
 
 Filters: `source`, `storage` and `kind` (`page`, `attachment`, `ocr`) match
-exactly; `domain` matches the host and its subdomains; `from` and `to` take
+exactly; `domain` matches the host and its subdomains; `keyword` matches
+pages tagged with it (see `keywords` below), ignoring case and diacritics;
+`from` and `to` take
 a date (`2026-10-01`, whole day, server time zone) or an RFC 3339 time
 (URL-encode the `+`). `limit` is at most 500.
 
@@ -54,6 +56,11 @@ A page:
   "authors": ["Anna Kowalska"],
   "schemaTypes": ["NewsArticle"],
   "schemaOrg": [{"@type": "NewsArticle", "headline": "New tram line approved"}],
+  "openGraph": {"og:type": "article", "og:image": "https://news.example.com/tram.jpg",
+                "article:tag": ["Transport", "Investments"], "twitter:card": "summary_large_image"},
+  "microformats": [{"type": ["h-entry"], "properties": {"name": ["New tram line approved"],
+                    "category": ["transport"], "published": ["2026-10-08T09:30:00+02:00"]}}],
+  "keywords": ["Transport", "Investments", "transport"],
   "source": "news-a", "engine": "static", "kind": "page",
   "mime": "text/html", "status": 200, "textLength": 420,
   "storage": "default", "epoch": "2026-W43",
@@ -68,7 +75,22 @@ A page:
 ```
 
 `text` (the extracted text) is included only by `/api/pages/{id}`. Optional
-fields are left out when unknown. `/content` adds `X-Hoarfrost-URL`,
+fields are left out when unknown.
+
+Structured data comes from the page as captured:
+
+- `schemaOrg` – schema.org objects from JSON-LD, microdata and RDFa Lite;
+- `openGraph` – Open Graph (`og:`, `article:`, `book:`, `profile:`,
+  `music:`, `video:`) and Twitter Card (`twitter:`) properties; a repeated
+  property (`og:image`, `article:tag`) is an array;
+- `microformats` – microformats2 items (`h-entry`, `h-card`, `h-event`…) in
+  the [mf2 JSON format](https://microformats.org/wiki/microformats2-parsing),
+  without embedded HTML;
+- `keywords` – tags from schema.org `keywords` and `articleSection`,
+  `article:tag`, `p-category` of `h-entry` items and `<meta name="keywords">`;
+- `authors` and `published` are derived from all of them.
+
+Captures made before a kind of data was extracted do not have it. `/content` adds `X-Hoarfrost-URL`,
 `X-Hoarfrost-Captured` and `X-Hoarfrost-Status` (the original HTTP status)
 and is served as an attachment in a sandbox, never rendered as part of
 hoarfrost.

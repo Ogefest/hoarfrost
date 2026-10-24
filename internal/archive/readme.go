@@ -52,7 +52,9 @@ weekly/<year>/W<week>.parquet lists every page of the package, one row per
 capture, sorted by url and capture time (row groups of 10000 rows carry
 min/max statistics and a bloom filter on url): url, captured, title,
 description, published, authors, schema_types, schema_org (JSON array of the
-schema.org objects found as JSON-LD, microdata or RDFa), source, kind, mime,
+schema.org objects found as JSON-LD, microdata or RDFa), open_graph (JSON
+object of Open Graph and Twitter Card properties), microformats (JSON array
+of microformats2 items), keywords, source, kind, mime,
 status, text_length, warc_file (file in the package's archive/ directory),
 record_id and metadata_id. Its SHA-256 is in the catalog. Any Parquet reader
 works, e.g. DuckDB:

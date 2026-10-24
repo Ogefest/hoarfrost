@@ -625,11 +625,20 @@ type PageInfo struct {
 	// Description is the meta (or Open Graph) description of the page.
 	Description string `json:"description,omitempty"`
 	// Authors are the people named as author, creator, contributor or
-	// editor in the schema.org data.
+	// editor in the schema.org data, h-entry authors and article:author.
 	Authors []string `json:"authors,omitempty"`
 	// SchemaOrg holds the top-level schema.org objects of the page (JSON-LD,
 	// microdata and RDFa), each with "@type".
-	SchemaOrg  []map[string]any  `json:"schemaOrg,omitempty"`
+	SchemaOrg []map[string]any `json:"schemaOrg,omitempty"`
+	// OpenGraph holds Open Graph and Twitter Card properties ("og:title",
+	// "article:tag"…): a string, or a list when the property is repeated.
+	OpenGraph map[string]any `json:"openGraph,omitempty"`
+	// Microformats holds the top-level microformats2 items (h-entry,
+	// h-card…) in the mf2 JSON format, without embedded HTML.
+	Microformats []map[string]any `json:"microformats,omitempty"`
+	// Keywords are the page's tags (schema.org keywords and articleSection,
+	// article:tag, p-category, meta keywords).
+	Keywords   []string          `json:"keywords,omitempty"`
 	Source     string            `json:"source,omitempty"`
 	Engine     string            `json:"engine,omitempty"`
 	Fallback   bool              `json:"fallback,omitempty"`

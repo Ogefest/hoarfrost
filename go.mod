@@ -5,10 +5,12 @@ go 1.26.1
 require (
 	github.com/andybalholm/brotli v1.2.6
 	github.com/go-rod/rod v0.116.2
+	github.com/jackc/pgx/v5 v5.7.5
 	github.com/johannesboyne/gofakes3 v1.2.0
 	github.com/markusmobius/go-trafilatura v1.12.2
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/mmcdole/gofeed v1.5.0
+	github.com/parquet-go/parquet-go v0.25.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/tdewolff/parse/v2 v2.8.16
 	golang.org/x/crypto v0.57.0
@@ -17,6 +19,7 @@ require (
 	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.60.1
+	willnorris.com/go/microformats v1.2.0
 )
 
 require (
@@ -36,7 +39,6 @@ require (
 	github.com/hablullah/go-juliandays v1.0.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.5 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jalaali/go-jalaali v0.0.0-20210801064154-80525e88d958 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
@@ -52,7 +54,6 @@ require (
 	github.com/mmcdole/goxpp/v2 v2.0.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/parquet-go/parquet-go v0.25.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect

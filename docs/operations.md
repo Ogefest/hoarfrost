@@ -245,6 +245,44 @@ All state outside the archive lives in one PostgreSQL database
   statistics; a read-optimized copy of what is in storage, dropped and
   rebuilt from storage when a new version changes its layout.
 
+### Browsing structured data
+
+The structured data of every capture is also stored in tables of
+`archive_index`, ready for SQL, BI tools or notebooks (the same data is in
+the read API and the weekly Parquet files):
+
+| Table | One row per | Main columns |
+|---|---|---|
+| `pages` | capture | `uri`, `title`, `description`, `captured`, `published`, `authors`, `keywords`, `schema_org`, `open_graph`, `microformats` (whole JSON per page) |
+| `page_items` | schema.org object or microformats2 item, nested ones included | `page_id`, `format` (`schema.org`, `microformats2`), `type` (`NewsArticle`, `h-entry`), `types`, `parent_id`, `property` (`author`, `children`…), `data` (JSONB) |
+| `page_properties` | Open Graph or Twitter Card value | `page_id`, `format` (`opengraph`, `twitter`), `name` (`og:image`, `article:tag`), `position`, `value` |
+| `page_keywords` | keyword of a page | `page_id`, `keyword`, `key` (lower case without diacritics) |
+
+```sql
+SET search_path = archive_index;
+
+-- Which kinds of structured data do the sources publish?
+SELECT p.source, i.format, i.type, count(*) FROM page_items i JOIN pages p USING (page_id)
+GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC;
+
+-- Most frequent keywords this month.
+SELECT min(k.keyword) AS keyword, count(*) FROM page_keywords k JOIN pages p USING (page_id)
+WHERE p.captured >= date_trunc('month', now()) GROUP BY k.key ORDER BY 2 DESC LIMIT 50;
+
+-- People and organizations named in articles, with the property naming them.
+SELECT i.type, i.property, i.data->>'name' AS name, count(*) FROM page_items i
+WHERE i.format = 'schema.org' AND i.type IN ('Person', 'Organization') AND i.parent_id IS NOT NULL
+GROUP BY 1, 2, 3 ORDER BY 4 DESC;
+
+-- Articles with their Open Graph image.
+SELECT p.uri, p.title, o.value AS image FROM pages p
+JOIN page_properties o ON o.page_id = p.page_id AND o.name = 'og:image' AND o.position = 0;
+```
+
+These tables are part of the derived index: they are rebuilt from storage
+with the rest of it, and queries should identify pages by `metadata_id`
+(the `captureId` of the API), not by `page_id`.
+
 Only the coordinator and the command-line tools connect to the database;
 workers do not. Instances that used SQLite (`app.sqlite`) are moved with
 `hoarfrost import-sqlite <data dir>/app.sqlite` into an empty database; the

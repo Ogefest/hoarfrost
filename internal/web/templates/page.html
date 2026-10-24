@@ -33,6 +33,24 @@
         {{range $d.Captures}}<li {{if eq .ID $p.ID}}class="current"{{end}}><a href="/page/{{.ID}}">{{datetime .Captured}}</a> <span class="muted">{{.Engine}}{{if ne .Kind "page"}} · {{.Kind}}{{end}}</span></li>{{end}}
       </ul>
     </section>
+    {{if or $p.Description $p.Authors $p.Keywords $d.Data.Types $d.Data.OpenGraph}}
+    <section class="card">
+      <h2>Structured data</h2>
+      {{with $p.Description}}<p>{{.}}</p>{{end}}
+      <dl class="facts">
+        {{with $p.Authors}}<dt>Authors</dt><dd>{{range $i, $a := .}}{{if $i}}, {{end}}{{$a}}{{end}}</dd>{{end}}
+        {{with $p.Keywords}}<dt>Keywords</dt><dd class="tags">{{range .}}<a class="tag" href="/archive?keyword={{urlquery .}}">{{.}}</a>{{end}}</dd>{{end}}
+        {{with $d.Data.Types}}<dt>Types</dt><dd class="tags">{{range .}}<code>{{.}}</code>{{end}}</dd>{{end}}
+      </dl>
+      {{with $d.Data.OpenGraph}}
+      <details class="compact"><summary>Open Graph and Twitter Cards ({{len .}})</summary>
+        <table class="kv">{{range .}}<tr><th>{{.Name}}</th><td>{{.Value}}</td></tr>{{end}}</table>
+      </details>
+      {{end}}
+      {{with $d.Data.SchemaOrg}}<details class="compact"><summary>schema.org</summary><pre class="json">{{.}}</pre></details>{{end}}
+      {{with $d.Data.Microformats}}<details class="compact"><summary>Microformats</summary><pre class="json">{{.}}</pre></details>{{end}}
+    </section>
+    {{end}}
     <section class="card">
       <h2>Text</h2>
       {{with $d.MetaErr}}<div class="flash err">{{.}}</div>{{end}}

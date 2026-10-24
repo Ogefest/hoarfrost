@@ -392,7 +392,7 @@ func TestOpenRecreatesOtherSchemaVersion(t *testing.T) {
 	}
 	fixture(t, db)
 	// Layout of an older release.
-	if _, err := db.db.Exec(`UPDATE index_meta SET version = 1; DROP TABLE pages`); err != nil {
+	if _, err := db.db.Exec(`UPDATE index_meta SET version = 1; DROP TABLE pages CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -514,5 +514,81 @@ func TestClosestRechecksSURTHash(t *testing.T) {
 	tl, _ := db.Timeline(ctx, "https://serwis.pl/budzet")
 	if len(tl) != 1 || !tl[0].Date.Equal(t0) {
 		t.Fatalf("timeline %+v", tl)
+	}
+}
+
+func TestStructuredDataTables(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	u := "https://news.example.com/budget"
+	page := recorder.PageInfo{URL: u, Title: "Council approves the budget", Text: "Text", Kind: "page",
+		SchemaOrg: []map[string]any{{"@type": "NewsArticle", "headline": "Council approves the budget",
+			"author": []any{map[string]any{"@type": "Person", "name": "Tom Smith"}}}},
+		OpenGraph: map[string]any{"og:type": "article", "og:image": []any{"a.jpg", "b.jpg"}, "twitter:card": "summary"},
+		Microformats: []map[string]any{{"type": []any{"h-entry"}, "properties": map[string]any{
+			"name":      []any{"Council approves the budget"},
+			"published": []any{"2026-10-06T12:00:00Z"},
+			"author":    []any{map[string]any{"type": []any{"h-card"}, "properties": map[string]any{"name": []any{"Tom Smith"}}, "value": "Tom Smith"}},
+		}}},
+		Keywords: []string{"City council", "Łódź", "city COUNCIL"},
+	}
+	cf := capture("s.warc.gz", t0, page, recorder.RecordInfo{ID: "<s1>", Type: warcio.TypeResponse, URI: u, Digest: "sha1:S", Length: 10})
+	if err := db.AddCapture(ctx, cf, cf.Key()); err != nil {
+		t.Fatal(err)
+	}
+
+	var items []string
+	rows, err := db.db.QueryContext(ctx, `SELECT i.format, i.type, coalesce(i.property, ''), coalesce(p.type, '')
+		FROM page_items i LEFT JOIN page_items p ON p.item_id = i.parent_id ORDER BY i.position`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f, typ, prop, parent string
+		if err := rows.Scan(&f, &typ, &prop, &parent); err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, f+":"+typ+"<"+parent+"."+prop)
+	}
+	if want := "schema.org:NewsArticle<. schema.org:Person<NewsArticle.author microformats2:h-entry<. microformats2:h-card<h-entry.author"; strings.Join(items, " ") != want {
+		t.Errorf("items %v", items)
+	}
+
+	var props string
+	if err := db.db.QueryRowContext(ctx, `SELECT string_agg(format || ' ' || name || '[' || position || ']=' || value, ', ' ORDER BY name, position)
+		FROM page_properties`).Scan(&props); err != nil {
+		t.Fatal(err)
+	}
+	if props != "opengraph og:image[0]=a.jpg, opengraph og:image[1]=b.jpg, opengraph og:type[0]=article, twitter twitter:card[0]=summary" {
+		t.Errorf("properties %s", props)
+	}
+
+	// Keywords are matched ignoring case and diacritics; duplicates collapse.
+	for _, k := range []string{"city council", "LODZ", " City   Council "} {
+		if res, total, err := db.Search(ctx, SearchQuery{Keyword: k}); err != nil || total != 1 || len(res[0].Keywords) != 3 {
+			t.Errorf("keyword %q: %d %v", k, total, err)
+		}
+	}
+	if _, total, _ := db.Search(ctx, SearchQuery{Keyword: "budget"}); total != 0 {
+		t.Error("keyword filter matched a word of the title")
+	}
+	if n, _ := db.CountMatches(ctx, "lodz"); n != 1 {
+		t.Error("keywords are not searchable")
+	}
+	p, err := db.PageByMetadata(ctx, "<meta-s.warc.gz>")
+	if err != nil || !strings.Contains(string(p.OpenGraph), `"og:type": "article"`) || !strings.Contains(string(p.Microformats), "h-entry") ||
+		p.Published != "2026-10-06" {
+		t.Fatalf("page %+v %v", p, err)
+	}
+
+	// Deleting the week removes the rows of its pages.
+	if err := db.DeleteEpoch(ctx, "", "2026-W41"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	db.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM page_items) + (SELECT count(*) FROM page_properties) + (SELECT count(*) FROM page_keywords)`).Scan(&left)
+	if left != 0 {
+		t.Errorf("%d rows left", left)
 	}
 }

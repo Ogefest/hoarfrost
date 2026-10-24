@@ -119,6 +119,12 @@ func TestReadOnlyAPIKeys(t *testing.T) {
 	if resp, raw := api(t, "GET", e.srv.URL+"/api/search?q=tramwajowej", key, "", nil); resp.StatusCode != 200 || !strings.Contains(string(raw), `"total":1`) {
 		t.Fatalf("search: %s", raw)
 	}
+	if resp, raw := api(t, "GET", e.srv.URL+"/api/pages?after=0&keyword=INWESTYCJE", key, "", nil); resp.StatusCode != 200 ||
+		!strings.Contains(string(raw), `"keywords":["Transport","Inwestycje","komunikacja"]`) ||
+		!strings.Contains(string(raw), `"article:tag":["Transport","Inwestycje"]`) || !strings.Contains(string(raw), `"h-entry"`) ||
+		strings.Count(string(raw), `"captureId"`) != 1 {
+		t.Fatalf("keyword filter: %s", raw)
+	}
 	if resp, raw := api(t, "GET", e.srv.URL+"/api/facets", key, "", nil); resp.StatusCode != 200 || !strings.Contains(string(raw), `"name":"wiadomosci"`) {
 		t.Fatalf("facets: %s", raw)
 	}

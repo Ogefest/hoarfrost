@@ -10,6 +10,7 @@
     {{range $d.Storages}}<option {{if eq . $d.Query.Storage}}selected{{end}}>{{.}}</option>{{end}}
   </select>{{end}}
   <input name="domain" value="{{$d.Query.Domain}}" placeholder="domain">
+  <input name="keyword" value="{{$d.Query.Keyword}}" placeholder="keyword">
   <select name="kind"><option value="">Pages and files</option>
     <option value="page" {{if eq $d.Query.Kind "page"}}selected{{end}}>Pages</option>
     <option value="attachment" {{if eq $d.Query.Kind "attachment"}}selected{{end}}>Attachments</option>
@@ -31,9 +32,9 @@
 </table>
 {{if gt $d.Pages 1}}
 <nav class="pager">
-  {{if gt $d.Page 1}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "from" $d.FromStr "to" $d.ToStr "page" (sub $d.Page 1)}}">← Previous</a>{{end}}
+  {{if gt $d.Page 1}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "keyword" $d.Query.Keyword "from" $d.FromStr "to" $d.ToStr "page" (sub $d.Page 1)}}">← Previous</a>{{end}}
   <span>page {{$d.Page}} of {{$d.Pages}}</span>
-  {{if lt $d.Page $d.Pages}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "from" $d.FromStr "to" $d.ToStr "page" (add $d.Page 1)}}">Next →</a>{{end}}
+  {{if lt $d.Page $d.Pages}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "keyword" $d.Query.Keyword "from" $d.FromStr "to" $d.ToStr "page" (add $d.Page 1)}}">Next →</a>{{end}}
 </nav>
 {{end}}
 {{end}}

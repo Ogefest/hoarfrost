@@ -18,20 +18,59 @@ const (
 	maxDescription   = 2000
 )
 
-// Structured is the page description and schema.org data found in HTML.
+// Structured is the page description and the structured data found in
+// HTML: schema.org, Open Graph and microformats2.
 type Structured struct {
 	Description string
 	// SchemaOrg holds top-level schema.org objects, each with "@type",
 	// from JSON-LD, microdata and RDFa, in document order.
 	SchemaOrg []map[string]any
+	// OpenGraph holds Open Graph (og:, article:, book:, profile:, music:,
+	// video:) and Twitter Card properties: a string, or a list when repeated.
+	OpenGraph map[string]any
+	// Microformats holds the top-level microformats2 items (h-entry,
+	// h-card…) in the JSON form of the mf2 parsing specification.
+	Microformats []map[string]any
+	// Keywords are the page's tags from all of the above and meta keywords.
+	Keywords []string
 }
 
-// Fill copies the description, the schema.org objects and the people named
-// in them into the metadata of a page.
+// Fill copies the description, the structured data, the keywords and the
+// people named in them into the metadata of a page.
 func (s Structured) Fill(p *recorder.PageInfo) {
 	p.Description = s.Description
 	p.SchemaOrg = s.SchemaOrg
-	p.Authors = People(s.SchemaOrg)
+	p.OpenGraph = s.OpenGraph
+	p.Microformats = s.Microformats
+	p.Keywords = s.Keywords
+	p.Authors = s.Authors()
+}
+
+// Authors returns the people named in schema.org data, the authors of
+// microformats h-entry items and Open Graph article:author names (not
+// profile URLs), without duplicates.
+func (s Structured) Authors() []string {
+	out := People(s.SchemaOrg)
+	seen := map[string]bool{}
+	for _, a := range out {
+		seen[a] = true
+	}
+	add := func(n string) {
+		n = normalizeSpace(n)
+		if n != "" && !seen[n] && !strings.HasPrefix(n, "http") {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	for _, e := range entries(s.Microformats) {
+		for _, a := range mfStrings(e, "author") {
+			add(a)
+		}
+	}
+	for _, a := range OpenGraphValues(s.OpenGraph, "article:author") {
+		add(a)
+	}
+	return out
 }
 
 // Types returns the distinct schema.org types of objects, without the
@@ -145,14 +184,32 @@ func DatePublished(objects []map[string]any) string {
 	return ""
 }
 
-// StructuredData extracts meta description and schema.org objects.
-func StructuredData(body []byte, contentType string) Structured {
+// PublishedDates returns the publication dates stated by the structured
+// data, most reliable first: schema.org datePublished, Open Graph
+// article:published_time, then dt-published of microformats h-entry.
+func PublishedDates(schemaOrg []map[string]any, og map[string]any, mf []map[string]any) []string {
+	var out []string
+	if d := DatePublished(schemaOrg); d != "" {
+		out = append(out, d)
+	}
+	out = append(out, OpenGraphValues(og, "article:published_time")...)
+	for _, e := range entries(mf) {
+		out = append(out, mfStrings(e, "published")...)
+	}
+	return out
+}
+
+// StructuredData extracts the meta description, schema.org objects, Open
+// Graph properties, microformats2 items and keywords. pageURL resolves
+// relative URLs in microformats.
+func StructuredData(body []byte, contentType, pageURL string) Structured {
 	doc, err := html.Parse(strings.NewReader(decodeText(body, contentType)))
 	if err != nil {
 		return Structured{}
 	}
 	var s Structured
-	var ogDescription string
+	var ogDescription, metaKeywords string
+	var og openGraph
 	var objects []map[string]any
 	var walk func(n *html.Node)
 	walk = func(n *html.Node) {
@@ -164,8 +221,15 @@ func StructuredData(body []byte, contentType string) Structured {
 				switch {
 				case name == "description" && s.Description == "":
 					s.Description = attr(n, "content")
-				case prop == "og:description" && ogDescription == "":
-					ogDescription = attr(n, "content")
+				case name == "keywords" && metaKeywords == "":
+					metaKeywords = attr(n, "content")
+				}
+				// Open Graph uses property=, Twitter Cards name= (both seen in the wild).
+				if key := first(prop, name); isOpenGraph(key) {
+					og.add(key, attr(n, "content"))
+					if key == "og:description" && ogDescription == "" {
+						ogDescription = attr(n, "content")
+					}
 				}
 			case "script":
 				if strings.EqualFold(strings.TrimSpace(strings.Split(attr(n, "type"), ";")[0]), "application/ld+json") && n.FirstChild != nil {
@@ -202,7 +266,19 @@ func StructuredData(body []byte, contentType string) Structured {
 		size += len(b)
 		s.SchemaOrg = append(s.SchemaOrg, o)
 	}
+	s.OpenGraph = og.result()
+	s.Microformats = microformats2(doc, pageURL)
+	s.Keywords = Keywords(s.SchemaOrg, s.OpenGraph, s.Microformats, metaKeywords)
 	return s
+}
+
+func first(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func attr(n *html.Node, key string) string {

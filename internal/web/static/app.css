@@ -196,6 +196,19 @@ ul.timeline li::before { content: ""; position: absolute; left: 0; top: 13px; wi
 .form-grid label.inline { margin: 26px 0 14px; }
 details { margin: 4px 0 16px; }
 details summary { cursor: pointer; color: var(--accent); font-weight: 500; margin-bottom: 14px; }
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 14px; font-size: 13.5px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+a.tag { text-decoration: none; }
+a.tag:hover { color: var(--accent); border-color: var(--accent); }
+table.kv { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.kv th { text-align: left; font-weight: 500; color: var(--muted); text-transform: none; letter-spacing: normal; font-size: 12.5px; padding: 3px 10px 3px 0; vertical-align: top; white-space: nowrap; }
+table.kv td { padding: 3px 0; overflow-wrap: anywhere; }
+details.compact { margin: 0 0 6px; }
+details.compact summary { margin-bottom: 0; font-size: 13.5px; }
+details.compact[open] summary { margin-bottom: 8px; }
+pre.json { font-size: 12px; max-height: 40vh; overflow: auto; background: var(--soft); padding: 10px; border-radius: 8px; margin: 0; }
 .htmx-request { opacity: .6; cursor: progress; }
 
 @media (max-width: 720px) {

@@ -56,6 +56,7 @@ paths:
         - $ref: "#/components/parameters/storage"
         - $ref: "#/components/parameters/domain"
         - $ref: "#/components/parameters/kind"
+        - $ref: "#/components/parameters/keyword"
         - $ref: "#/components/parameters/from"
         - $ref: "#/components/parameters/to"
       responses:
@@ -100,6 +101,7 @@ paths:
         - $ref: "#/components/parameters/storage"
         - $ref: "#/components/parameters/domain"
         - $ref: "#/components/parameters/kind"
+        - $ref: "#/components/parameters/keyword"
         - $ref: "#/components/parameters/from"
         - $ref: "#/components/parameters/to"
         - name: limit
@@ -310,6 +312,11 @@ components:
       name: kind
       in: query
       schema: {$ref: "#/components/schemas/Kind"}
+    keyword:
+      name: keyword
+      in: query
+      description: Pages tagged with this keyword (see `keywords`), ignoring case and diacritics.
+      schema: {type: string, examples: [city council]}
     from:
       name: from
       in: query
@@ -364,10 +371,11 @@ components:
         published:
           type: string
           format: date
-          description: Publication date when the page states it.
+          description: Publication date when the page states it (schema.org `datePublished`, `article:published_time`, `dt-published`, or the text).
         authors:
           type: array
           items: {type: string}
+          description: People named as author, creator, contributor or editor in schema.org data, `h-entry` authors and `article:author` names.
         schemaTypes:
           type: array
           items: {type: string}
@@ -376,6 +384,39 @@ components:
           type: array
           items: {type: object}
           description: schema.org objects found in the page (JSON-LD, microdata, RDFa Lite).
+        openGraph:
+          type: object
+          description: |
+            Open Graph (`og:`, `article:`, `book:`, `profile:`, `music:`, `video:`) and Twitter Card
+            (`twitter:`) properties. A property is a string, or an array of strings when the page repeats it.
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: array
+                items: {type: string}
+          examples:
+            - {"og:type": "article", "og:image": ["https://news.example.com/a.jpg", "https://news.example.com/b.jpg"], "article:tag": "Budget", "twitter:card": "summary"}
+        microformats:
+          type: array
+          description: |
+            Top-level microformats2 items (`h-entry`, `h-card`, `h-event`…) in the JSON format of the
+            mf2 parsing specification, with relative URLs resolved. Embedded HTML of `e-*` properties is
+            omitted; long values are shortened to 2,000 characters.
+          items:
+            type: object
+            required: [type, properties]
+            properties:
+              type: {type: array, items: {type: string}}
+              properties: {type: object, additionalProperties: {type: array, items: {}}}
+              children: {type: array, items: {type: object}}
+              value: {type: string}
+              id: {type: string}
+        keywords:
+          type: array
+          items: {type: string}
+          description: |
+            Tags of the page, without duplicates: schema.org `keywords` and `articleSection`, Open Graph
+            `article:tag`, microformats `p-category` of `h-entry` items and `<meta name="keywords">`.
         source:
           type: string
           description: Source that captured the page, `api` or `upload` for manual additions.

@@ -51,7 +51,16 @@ as well) with: `url`, `recordId`, `title`,
 extracted also carry `description` (meta or Open Graph description),
 `schemaOrg` (the page's top-level schema.org objects from JSON-LD, microdata
 and RDFa, each with `@type`; at most 32 objects and 64 KiB) and `authors`
-(names given as author, creator, contributor or editor in those objects).
+(names given as author, creator, contributor or editor in those objects,
+`h-entry` authors and `article:author` names). Newer captures also carry
+`openGraph` (Open Graph and Twitter Card properties: `og:`, `article:`,
+`book:`, `profile:`, `music:`, `video:`, `twitter:`; a string, or a list
+when repeated; at most 100 values), `microformats` (top-level microformats2
+items in the JSON format of the mf2 parsing specification, relative URLs
+resolved, embedded HTML of `e-*` properties left out; at most 32 items and
+64 KiB) and `keywords` (schema.org `keywords` and `articleSection`,
+`article:tag`, `p-category` of `h-entry` items, `<meta name="keywords">`;
+at most 50). The same fields are in `pages/pages.jsonl` of the package.
 
 ## Page table
 
@@ -59,10 +68,13 @@ Sealing a week also writes `weekly/<year>/W<week>.parquet` (Apache Parquet,
 zstd), one row per page capture, rows sorted by `url` and `captured`, row
 groups of 10000 rows with statistics, sorting metadata and a bloom filter on
 `url`. Columns: `url`, `captured`, `title`, `description`, `published`,
-`authors`, `schema_types`, `schema_org` (JSON), `source`, `kind`, `mime`,
+`authors`, `schema_types`, `schema_org` (JSON), `open_graph` (JSON),
+`microformats` (JSON), `keywords`, `source`, `kind`, `mime`,
 `status`, `text_length`, `warc_file`, `record_id`, `metadata_id`. The file is
 derived from the index at sealing time; its SHA-256 and row count are in the
-catalog and checked by `hoarfrost verify`.
+catalog and checked by `hoarfrost verify`. Files of weeks sealed before a
+column was added lack it; DuckDB reads mixed files with
+`read_parquet('weekly/*/*.parquet', union_by_name = true)`.
 
 ## WACZ package
 

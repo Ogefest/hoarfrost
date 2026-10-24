@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/coordinator"
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/export"
+	"github.com/ogefest/hoarfrost/internal/extract"
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
 	"github.com/ogefest/hoarfrost/internal/recorder"
@@ -78,7 +82,8 @@ const perPage = 50
 
 func searchQuery(r *http.Request) (index.SearchQuery, int) {
 	q := r.URL.Query()
-	sq := index.SearchQuery{Q: q.Get("q"), Source: q.Get("source"), Storage: q.Get("storage"), Domain: q.Get("domain"), Kind: q.Get("kind"), Limit: perPage}
+	sq := index.SearchQuery{Q: q.Get("q"), Source: q.Get("source"), Storage: q.Get("storage"), Domain: q.Get("domain"), Kind: q.Get("kind"),
+		Keyword: q.Get("keyword"), Limit: perPage}
 	// Dates include the whole day; the API also takes RFC 3339 times.
 	if t, err := time.ParseInLocation(time.DateOnly, q.Get("from"), time.Local); err == nil {
 		sq.From = t
@@ -143,6 +148,47 @@ type pageData struct {
 	Replay   bool
 	Record   index.Record
 	HTML     bool
+	Data     structuredView
+}
+
+// structuredView is the structured data of a page prepared for display.
+type structuredView struct {
+	Types        []string // schema.org and microformats2 types
+	OpenGraph    []nameValue
+	SchemaOrg    string // indented JSON
+	Microformats string
+}
+
+type nameValue struct{ Name, Value string }
+
+func structured(p index.Page) structuredView {
+	var v structuredView
+	var og map[string]any
+	if json.Unmarshal(p.OpenGraph, &og) == nil {
+		names := make([]string, 0, len(og))
+		for name := range og {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, val := range extract.OpenGraphValues(og, name) {
+				v.OpenGraph = append(v.OpenGraph, nameValue{name, val})
+			}
+		}
+	}
+	var mf []map[string]any
+	_ = json.Unmarshal(p.Microformats, &mf)
+	v.Types = append(append(v.Types, p.SchemaTypes...), extract.MicroformatTypes(mf)...)
+	v.SchemaOrg, v.Microformats = indentJSON(p.SchemaOrg), indentJSON(p.Microformats)
+	return v
+}
+
+func indentJSON(raw json.RawMessage) string {
+	var b bytes.Buffer
+	if len(raw) == 0 || string(raw) == "null" || json.Indent(&b, raw, "", "  ") != nil {
+		return ""
+	}
+	return b.String()
 }
 
 func (s *Server) pageView(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +197,7 @@ func (s *Server) pageView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	d := pageData{Page: p}
+	d := pageData{Page: p, Data: structured(p)}
 	if meta, err := s.lib.PageMetadata(ctx, p); err != nil {
 		d.MetaErr = err.Error()
 	} else {

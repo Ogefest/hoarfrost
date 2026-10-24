@@ -30,12 +30,17 @@ type PageRow struct {
 	Authors     []string  `parquet:"authors,list"`
 	SchemaTypes []string  `parquet:"schema_types,list"`
 	// SchemaOrg is the JSON array of schema.org objects of the page.
-	SchemaOrg  string `parquet:"schema_org,optional,json"`
-	Source     string `parquet:"source"`
-	Kind       string `parquet:"kind"`
-	Mime       string `parquet:"mime"`
-	Status     int32  `parquet:"status"`
-	TextLength int32  `parquet:"text_length"`
+	SchemaOrg string `parquet:"schema_org,optional,json"`
+	// OpenGraph is the JSON object of Open Graph and Twitter Card properties.
+	OpenGraph string `parquet:"open_graph,optional,json"`
+	// Microformats is the JSON array of microformats2 items.
+	Microformats string   `parquet:"microformats,optional,json"`
+	Keywords     []string `parquet:"keywords,list"`
+	Source       string   `parquet:"source"`
+	Kind         string   `parquet:"kind"`
+	Mime         string   `parquet:"mime"`
+	Status       int32    `parquet:"status"`
+	TextLength   int32    `parquet:"text_length"`
 	// WARCFile is the WARC file in the package's archive/ directory that
 	// holds the page; RecordID and MetadataID are its records there.
 	WARCFile   string `parquet:"warc_file"`
@@ -50,7 +55,8 @@ const parquetRowGroup = 10000
 func pageRow(p index.Page) PageRow {
 	r := PageRow{
 		URL: p.URI, Captured: p.Captured.UTC(), Title: p.Title, Description: p.Description, Authors: p.Authors,
-		SchemaTypes: p.SchemaTypes, SchemaOrg: string(p.SchemaOrg), Source: p.Source, Kind: p.Kind, Mime: p.Mime,
+		SchemaTypes: p.SchemaTypes, SchemaOrg: string(p.SchemaOrg),
+		OpenGraph: string(p.OpenGraph), Microformats: string(p.Microformats), Keywords: p.Keywords, Source: p.Source, Kind: p.Kind, Mime: p.Mime,
 		Status: int32(p.Status), TextLength: int32(p.TextLen), WARCFile: p.File, RecordID: p.RecordID, MetadataID: p.MetadataID,
 	}
 	if t, err := time.Parse(time.DateOnly, p.Published); err == nil {
