@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
 <title>{{if .Title}}{{.Title}} · {{end}}hoarfrost</title>
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/logo.svg?v={{version}}" type="image/svg+xml">
 <link rel="preload" href="/static/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/app.css?v={{version}}">
 <script src="/static/htmx.min.js?v=2.0.4" defer></script>
@@ -13,7 +13,7 @@
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'{{end}}>
 {{if .User.Login}}
 <header class="top">
-  <a class="brand" href="/">{{icon "snowflake"}}<span>hoarfrost</span></a>
+  <a class="brand" href="/"><img class="logo" src="/static/logo.svg?v={{version}}" alt="" width="20" height="20"><span>hoarfrost</span></a>
   <nav>
     <a href="/" {{if eq .Path "/"}}class="active"{{end}}>{{icon "layout-dashboard"}}<span>Dashboard</span></a>
     <a href="/archive" {{if or (under .Path "/archive") (under .Path "/page") (under .Path "/replay")}}class="active"{{end}}>{{icon "archive"}}<span>Archive</span></a>

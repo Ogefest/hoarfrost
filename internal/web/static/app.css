@@ -55,7 +55,7 @@ b { font-weight: 600; }
   border-bottom: 1px solid var(--line);
 }
 .top .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; letter-spacing: -.01em; color: var(--fg); }
-.top .brand .i { width: 20px; height: 20px; color: var(--accent); }
+.top .brand .logo { width: 20px; height: 20px; }
 .top .brand:hover { text-decoration: none; }
 .top nav { display: flex; gap: 2px; flex: 1; overflow-x: auto; scrollbar-width: none; }
 .top nav a { display: flex; align-items: center; gap: 7px; color: var(--muted); padding: 6px 12px; border-radius: var(--radius-sm); font-weight: 500; white-space: nowrap; }
@@ -226,6 +226,7 @@ pre.json { font-size: 12px; max-height: 40vh; overflow: auto; background: var(--
 @media (max-width: 1100px) { .top nav a span { display: none; } .top nav a.active span { display: inline; } }
 .wide { width: 100%; justify-content: center; padding: 8px 12px; }
 h1 .i { width: 22px; height: 22px; color: var(--accent); }
+h1 .logo { width: 24px; height: 24px; vertical-align: -4px; }
 .actions .i, button .i, .button .i { width: 15px; height: 15px; vertical-align: 0; }
 code:empty { display: none; }
 label > .muted { font-weight: 400; margin-left: 4px; }

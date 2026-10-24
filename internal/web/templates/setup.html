@@ -1,6 +1,6 @@
 {{define "content"}}
 <section class="narrow card">
-  <h1>{{icon "snowflake"}} Create the administrator</h1>
+  <h1><img class="logo" src="/static/logo.svg?v={{version}}" alt="" width="20" height="20"> Create the administrator</h1>
   <p class="muted">No users exist yet. The first account gets the admin role.</p>
   {{with .Data.Error}}<div class="flash err">{{.}}</div>{{end}}
   <form method="post" action="/setup">

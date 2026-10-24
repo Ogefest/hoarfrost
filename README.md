@@ -1,7 +1,15 @@
-# hoarfrost
+<p align="center">
+  <img src="internal/web/static/logo.svg" alt="hoarfrost logo" width="96" height="96">
+</p>
 
-[![ci](https://github.com/Ogefest/hoarfrost/actions/workflows/ci.yml/badge.svg)](https://github.com/Ogefest/hoarfrost/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h1 align="center">hoarfrost</h1>
+
+<p align="center">Self-hosted web archiving for articles and pages that disappear.</p>
+
+<p align="center">
+  <a href="https://github.com/Ogefest/hoarfrost/actions/workflows/ci.yml"><img src="https://github.com/Ogefest/hoarfrost/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+</p>
 
 **hoarfrost** is a self-hosted web archiving system for preserving the
 internet's most short-lived content: news articles and individual web pages
@@ -186,4 +194,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Apache License 2.0. ReplayWeb.page (AGPL-3.0) is not bundled; the replay
 page loads it from a CDN.
 Bundled web assets: htmx 2.0.4 (0BSD), Inter font (SIL OFL 1.1,
-`internal/web/static/fonts/OFL.txt`), Lucide icons (ISC).
+`internal/web/static/fonts/OFL.txt`), Lucide icons (ISC). The logo
+(`internal/web/static/logo.svg`) is Lucide's "snowflake" icon.
