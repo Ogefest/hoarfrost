@@ -137,7 +137,7 @@ func storeHTML(ctx context.Context, w Writer, u Upload, res *Result) error {
 	ex := extract.HTML(u.Body, "text/html; charset=utf-8", url)
 	p := page(u, url, info.ID, ex.Title, ex.Text, "text/html")
 	p.Published = ex.Published
-	ex.Structured.Fill(&p)
+	ex.Fill(&p)
 	if _, err := w.WriteMetadata(p); err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func storeMHTML(ctx context.Context, w Writer, u Upload, res *Result) error {
 	}
 	p := page(u, url, info.ID, title, ex.Text, MHTMLContentType)
 	p.Published = ex.Published
-	ex.Structured.Fill(&p)
+	ex.Fill(&p)
 	if _, err := w.WriteMetadata(p); err != nil {
 		return err
 	}
@@ -361,7 +361,7 @@ func storeWARC(ctx context.Context, w Writer, data []byte, u Upload, res *Result
 		}
 		p := page(u, c.url, c.id, title, ex.Text, c.mime)
 		p.Published = ex.Published
-		ex.Structured.Fill(&p)
+		ex.Fill(&p)
 		if _, err := w.WriteMetadata(p); err != nil {
 			return err
 		}

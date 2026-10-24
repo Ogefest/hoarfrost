@@ -158,7 +158,7 @@ func importFile(ctx context.Context, r *recorder.Recorder, it item) error {
 		Source: Source, Engine: "import", Kind: "page", Mime: "text/html", Status: 200,
 		Extra: map[string]string{"legacyPath": it.rel},
 	}
-	ex.Structured.Fill(&p)
+	ex.Fill(&p)
 	_, err = r.WriteMetadata(p)
 	return err
 }

@@ -200,7 +200,7 @@ func (e *Engine) Capture(ctx context.Context, job engine.Job, rec engine.Recorde
 	}
 	ex := extract.HTML([]byte(dom), "text/html; charset=utf-8", job.URL)
 	pageInfo.Title, pageInfo.Text, pageInfo.Published = ex.Title, ex.Text, ex.Published
-	ex.Structured.Fill(&pageInfo)
+	ex.Fill(&pageInfo)
 	pageInfo.DurationMS = time.Since(start).Milliseconds()
 	if _, err := rec.WriteMetadata(pageInfo); err != nil {
 		return engine.Result{}, err

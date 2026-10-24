@@ -192,7 +192,7 @@ func Describe(ctx context.Context, job Job, engineName string, resp *Response) r
 		page.Title = res.Title
 		page.Text = res.Text
 		page.Published = res.Published
-		res.Structured.Fill(&page)
+		res.Fill(&page)
 	}
 	return page
 }

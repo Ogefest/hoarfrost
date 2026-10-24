@@ -495,24 +495,33 @@ func insertRecords(ctx context.Context, tx *sql.Tx, recs []Record) ([]Record, er
 			byID[r.ID] = r
 		}
 		q.WriteString(` ON CONFLICT DO NOTHING RETURNING record_id`)
-		rows, err := tx.QueryContext(ctx, q.String(), args...)
+		ids, err := insertedIDs(ctx, tx, q.String(), args)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
+		for _, id := range ids {
 			inserted = append(inserted, byID[id])
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 	}
 	return inserted, nil
+}
+
+// insertedIDs runs an INSERT … RETURNING record_id and collects the IDs.
+func insertedIDs(ctx context.Context, tx *sql.Tx, query string, args []any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // published is the publication time of a page: the schema.org
@@ -900,8 +909,8 @@ func (d *DB) URL(ctx context.Context, storage, uri string) (URLInfo, error) {
 	}
 	u.FirstSeen, u.LastCaptured, u.Published = u.FirstSeen.UTC(), last.Time.UTC(), pub.Time.UTC()
 	u.Title, u.Description = title.String, desc.String
-	json.Unmarshal([]byte(authors), &u.Authors)
-	json.Unmarshal([]byte(types), &u.SchemaTypes)
+	_ = json.Unmarshal([]byte(authors), &u.Authors) // written by AddCapture; a bad value only hides the list
+	_ = json.Unmarshal([]byte(types), &u.SchemaTypes)
 	if schemaOrg.Valid {
 		u.SchemaOrg = json.RawMessage(schemaOrg.String)
 	}

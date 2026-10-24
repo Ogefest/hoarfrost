@@ -61,8 +61,8 @@ func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 		return p, ErrNotFound
 	}
 	p.Epoch, p.Captured = epoch.ID(ep), p.Captured.UTC()
-	json.Unmarshal([]byte(authors), &p.Authors)
-	json.Unmarshal([]byte(types), &p.SchemaTypes)
+	_ = json.Unmarshal([]byte(authors), &p.Authors) // written by AddCapture; a bad value only hides the list
+	_ = json.Unmarshal([]byte(types), &p.SchemaTypes)
 	if published.Valid {
 		p.Published = published.Time.UTC().Format(time.DateOnly)
 	}

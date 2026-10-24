@@ -31,7 +31,7 @@ func URL(t testing.TB) string {
 
 func name(prefix string) string {
 	b := make([]byte, 6)
-	rand.Read(b)
+	_, _ = rand.Read(b) // never fails
 	return prefix + "_" + hex.EncodeToString(b)
 }
 

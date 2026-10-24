@@ -26,6 +26,13 @@ func (c *capture) write(p []byte) {
 	c.mu.Unlock()
 }
 
+// unwrite drops the last n recorded bytes that were not actually sent.
+func (c *capture) unwrite(n int) {
+	c.mu.Lock()
+	c.sent.Truncate(max(0, c.sent.Len()-n))
+	c.mu.Unlock()
+}
+
 func (c *capture) read(p []byte) {
 	c.mu.Lock()
 	if c.limit > 0 && int64(c.received.Len()+len(p)) > c.limit {
@@ -55,10 +62,13 @@ func (cc *captureConn) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Write records p before sending it: the server may answer, and the response
+// be read and snapshotted, before the transport's writer goroutine returns.
 func (cc *captureConn) Write(p []byte) (int, error) {
+	cc.c.write(p)
 	n, err := cc.Conn.Write(p)
-	if n > 0 {
-		cc.c.write(p[:n])
+	if n < len(p) {
+		cc.c.unwrite(len(p) - n)
 	}
 	return n, err
 }

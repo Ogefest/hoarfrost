@@ -467,6 +467,7 @@ func TestSealWritesPageTable(t *testing.T) {
 	}
 	if art2 == nil {
 		t.Fatal("article2 missing")
+		return
 	}
 	if art2.Description != "Miasto ogłosiło przetarg na nową linię tramwajową." || strings.Join(art2.SchemaTypes, ",") != "NewsArticle" ||
 		strings.Join(art2.Authors, ",") != "Anna Kowalska" || art2.Published.Format(time.DateOnly) != "2026-10-08" ||

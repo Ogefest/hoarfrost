@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -155,7 +156,7 @@ func ReadPageTable(r io.ReaderAt, size int64) ([]PageRow, error) {
 	defer rd.Close()
 	rows := make([]PageRow, f.NumRows())
 	n, err := rd.Read(rows)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	return rows[:n], nil

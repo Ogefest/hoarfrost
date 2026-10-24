@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -209,6 +210,31 @@ func mustOpen(t *testing.T, p string) *os.File {
 	}
 	t.Cleanup(func() { f.Close() })
 	return f
+}
+
+// slowWriteConn returns from Write only some time after the bytes were sent,
+// as when the transport's writer goroutine is descheduled.
+type slowWriteConn struct{ net.Conn }
+
+func (c slowWriteConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	time.Sleep(100 * time.Millisecond)
+	return n, err
+}
+
+func TestRequestRecordedWhenResponseArrivesFirst(t *testing.T) {
+	srv := testServer()
+	defer srv.Close()
+	r := newRecorder(t, Options{Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		return slowWriteConn{conn}, err
+	}})
+	get(t, r.Client(), srv.URL+"/style.css")
+	cf, _ := r.Close()
+	recs := readFile(t, cf)
+	if len(recs) != 3 || recs[1].Type() != warcio.TypeRequest || !bytes.HasPrefix(recs[1].Block, []byte("GET /style.css HTTP/1.1")) {
+		t.Fatalf("request record missing: %d records", len(recs))
+	}
 }
 
 func TestDedupLocalAndExternal(t *testing.T) {

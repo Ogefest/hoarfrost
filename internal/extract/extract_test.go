@@ -157,7 +157,7 @@ func TestStructuredData(t *testing.T) {
 	if got := strings.Join(Types(s.SchemaOrg), ","); got != "BreadcrumbList,Event,NewsArticle,Person" {
 		t.Errorf("types %s (%d objects)", got, len(s.SchemaOrg))
 	}
-	if got := strings.Join(People(s.SchemaOrg), ","); got != "Anna Kowalska,Jan Nowak,nie autor" {
+	if got := strings.Join(People(s.SchemaOrg), ","); got != "Anna Kowalska,Jan Nowak,Ewa Zielińska" {
 		t.Errorf("people %s", got)
 	}
 	if DatePublished(s.SchemaOrg) != "2026-10-09T08:15:00+02:00" {
