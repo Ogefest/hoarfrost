@@ -86,4 +86,20 @@ func TestSaveLoadAndPollState(t *testing.T) {
 	if err := s.RecordPoll(ctx, "b", Status{LastPoll: at}); err != nil {
 		t.Fatal("poll of a deleted source must be ignored:", err)
 	}
+
+	// The last successful poll survives later failures.
+	if !st["a"].LastSuccess.IsZero() {
+		t.Fatalf("a failed poll counted as success: %+v", st["a"])
+	}
+	ok, failed := at.Add(time.Minute), at.Add(2*time.Minute)
+	if err := s.RecordPoll(ctx, "a", Status{LastPoll: ok, Found: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordPoll(ctx, "a", Status{LastPoll: failed, Error: "sitemap: HTTP 503"}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = s.Statuses(ctx)
+	if a := st["a"]; !a.LastPoll.Equal(failed) || !a.LastSuccess.Equal(ok) || a.Error == "" {
+		t.Fatalf("after failure %+v", a)
+	}
 }

@@ -110,6 +110,9 @@ func TestReadOnlyAPIKeys(t *testing.T) {
 	if resp, _ := api(t, "GET", e.srv.URL+first.Links.HTML, key, "", nil); resp.StatusCode != 200 {
 		t.Fatalf("export by capture id: %d", resp.StatusCode)
 	}
+	if resp, raw := api(t, "GET", e.srv.URL+"/metrics", key, "", nil); resp.StatusCode != 200 || !strings.Contains(string(raw), "hoarfrost_seal_errors") {
+		t.Fatalf("metrics with an API key: %d", resp.StatusCode)
+	}
 	if resp, _ := api(t, "GET", e.srv.URL+"/api/pages/00000000-0000-0000-0000-000000000000", key, "", nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatal("unknown capture")
 	}
@@ -123,7 +126,7 @@ func TestReadOnlyAPIKeys(t *testing.T) {
 	// Keys only read the API.
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/api/urls"}, {"GET", "/api/sources"}, {"GET", "/"}, {"GET", "/archive"},
-		{"GET", "/metrics"}, {"GET", "/system/keys"}, {"POST", "/system/keys"},
+		{"GET", "/system/keys"}, {"POST", "/system/keys"},
 	} {
 		if resp, _ := api(t, c.method, e.srv.URL+c.path, key, "application/json", strings.NewReader("{}")); resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("%s %s with an API key: %d", c.method, c.path, resp.StatusCode)

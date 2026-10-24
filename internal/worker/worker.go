@@ -39,7 +39,9 @@ type Completion struct {
 	Key     string                `json:"key,omitempty"`
 	Capture *recorder.CaptureFile `json:"capture,omitempty"`
 	Error   string                `json:"error,omitempty"`
-	Retry   bool                  `json:"retry,omitempty"`
+	// Reason classifies Error for metrics (Reason* constants or http_<status>).
+	Reason string `json:"reason,omitempty"`
+	Retry  bool   `json:"retry,omitempty"`
 	// NeedsFallback asks for a new capture with the source's fallback engine.
 	NeedsFallback bool     `json:"needsFallback,omitempty"`
 	Discovered    []string `json:"discovered,omitempty"`
@@ -241,7 +243,7 @@ func (w *Worker) capture(ctx context.Context, job engine.Job) Completion {
 	c := Completion{JobID: job.ID, Worker: w.Name}
 	eng, err := w.Engines.Get(job.Engine)
 	if err != nil {
-		c.Error = err.Error()
+		c.Error, c.Reason = err.Error(), ReasonEngine
 		return c
 	}
 	if job.Epoch == "" {
@@ -251,12 +253,12 @@ func (w *Worker) capture(ctx context.Context, job engine.Job) Completion {
 		job.Storage = DefaultStorage
 	}
 	if _, err := w.storage(job.Storage); err != nil {
-		c.Error = err.Error()
+		c.Error, c.Reason = err.Error(), ReasonStorage
 		return c
 	}
 	set, err := w.blocklist(ctx, job.Options.BlocklistVersion)
 	if err != nil {
-		c.Error, c.Retry = fmt.Sprintf("block lists: %v", err), true
+		c.Error, c.Reason, c.Retry = fmt.Sprintf("block lists: %v", err), ReasonBlocklist, true
 		return c
 	}
 	job.Blocked = blockRule(job, set)
@@ -276,31 +278,31 @@ func (w *Worker) capture(ctx context.Context, job engine.Job) Completion {
 	}
 	rec, err := recorder.New(opts)
 	if err != nil {
-		c.Error, c.Retry = err.Error(), true
+		c.Error, c.Reason, c.Retry = err.Error(), ReasonEngine, true
 		return c
 	}
 	res, capErr := eng.Capture(ctx, job, rec)
 	var se *engine.StatusError
 	if capErr != nil && !errors.As(capErr, &se) {
 		rec.Abort()
-		c.Error, c.Retry = capErr.Error(), ctx.Err() == nil
+		c.Error, c.Reason, c.Retry = capErr.Error(), reasonOf(capErr), ctx.Err() == nil
 		return c
 	}
 	cf, err := rec.Close()
 	if err != nil {
 		rec.Abort()
-		c.Error, c.Retry = err.Error(), true
+		c.Error, c.Reason, c.Retry = err.Error(), ReasonEngine, true
 		return c
 	}
 	defer os.Remove(cf.Path)
 	if err := w.upload(ctx, cf); err != nil {
-		c.Error, c.Retry = fmt.Sprintf("upload: %v", err), true
+		c.Error, c.Reason, c.Retry = fmt.Sprintf("upload: %v", err), ReasonStorage, true
 		return c
 	}
 	c.Key, c.Capture = cf.Key(), &cf
 	c.NeedsFallback, c.Discovered = res.NeedsFallback, res.Discovered
 	if se != nil {
-		c.Error, c.Retry = se.Error(), se.Status >= 500 || se.Status == 429
+		c.Error, c.Reason, c.Retry = se.Error(), reasonOf(se), se.Status >= 500 || se.Status == 429
 	}
 	return c
 }

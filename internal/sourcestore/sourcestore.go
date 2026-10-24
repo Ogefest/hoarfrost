@@ -17,10 +17,11 @@ import (
 
 // Status is the result of the last poll of a source.
 type Status struct {
-	LastPoll time.Time
-	Found    int
-	New      int
-	Error    string
+	LastPoll    time.Time
+	LastSuccess time.Time // last poll without errors; zero: never
+	Found       int
+	New         int
+	Error       string
 }
 
 // Store reads and writes the configuration.
@@ -144,14 +145,15 @@ func (s *Store) RecordPoll(ctx context.Context, name string, st Status) error {
 	if st.Error != "" {
 		errText = sql.NullString{String: st.Error, Valid: true}
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE sources SET last_poll = $1, found = $2, new = $3, last_error = $4 WHERE name = $5`,
+	_, err := s.db.ExecContext(ctx, `UPDATE sources SET last_poll = $1, found = $2, new = $3, last_error = $4,
+		last_success = CASE WHEN $4::text IS NULL THEN $1 ELSE last_success END WHERE name = $5`,
 		st.LastPoll.UTC(), st.Found, st.New, errText, name)
 	return err
 }
 
 // Statuses returns the last poll result of every source polled at least once.
 func (s *Store) Statuses(ctx context.Context) (map[string]Status, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, last_poll, found, new, last_error FROM sources WHERE last_poll IS NOT NULL`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, last_poll, last_success, found, new, last_error FROM sources WHERE last_poll IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
@@ -160,12 +162,13 @@ func (s *Store) Statuses(ctx context.Context) (map[string]Status, error) {
 	for rows.Next() {
 		var name string
 		var last time.Time
+		var success sql.NullTime
 		var st Status
 		var errText sql.NullString
-		if err := rows.Scan(&name, &last, &st.Found, &st.New, &errText); err != nil {
+		if err := rows.Scan(&name, &last, &success, &st.Found, &st.New, &errText); err != nil {
 			return nil, err
 		}
-		st.LastPoll, st.Error = last.UTC(), errText.String
+		st.LastPoll, st.LastSuccess, st.Error = last.UTC(), success.Time.UTC(), errText.String
 		out[name] = st
 	}
 	return out, rows.Err()

@@ -29,7 +29,7 @@ a lost secret cannot be shown again; revoke it and create a new one.
 | GET | `/api/export/{id}.html` | key, viewer | single-file HTML export with inlined resources |
 | GET | `/api/record/{record-id}` | key, viewer | raw WARC record (`.warc.gz` member); id with or without `<urn:uuid:…>` |
 | GET | `/wacz/{storage}/{year}/W{week}.wacz` | key, viewer | weekly package of a storage, with HTTP Range support |
-| GET | `/metrics` | viewer | Prometheus metrics |
+| GET | `/metrics` | key, viewer | Prometheus metrics, see [Monitoring](operations.md#monitoring) |
 
 `{id}` is either the `captureId` or the numeric `id` of a page. **Store the
 `captureId`**: it is the UUID of the capture's WARC metadata record and never

@@ -36,6 +36,15 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with: { version: v2.5.0, install-mode: goinstall }
 
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check and unit-test the Prometheus alerting rules
+        run: |
+          docker run --rm -v "$PWD/deploy:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v3.5.0 check rules alerts.yml
+          docker run --rm -v "$PWD/deploy:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts_test.yml
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

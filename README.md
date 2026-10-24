@@ -75,7 +75,11 @@ through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
   directories), chosen per source or per added URL, each one a complete,
   independent archive.
 - **Users** with roles (viewer, editor, admin), argon2id passwords with a
-  server-side pepper, API tokens, Prometheus `/metrics`.
+  server-side pepper, API tokens.
+- **Monitoring**: Prometheus `/metrics` with source health (failing or empty
+  feeds and sitemaps), capture failures by reason (401/403 paywalls, 404,
+  429, timeouts, storage), sealing and verification state, and tested
+  alerting rules in [deploy/alerts.yml](deploy/alerts.yml).
 - **Import** of an existing archive of single-file HTML pages (`monolith`).
 - On-demand **OCR** (tesseract) for scanned PDFs; PDF text via `pdftotext`.
 

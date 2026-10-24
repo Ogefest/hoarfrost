@@ -1,0 +1,143 @@
+# Prometheus alerting rules for hoarfrost; see docs/operations.md#monitoring.
+# Load with `rule_files: [alerts.yml]`. The scrape job is assumed to be named
+# "hoarfrost"; adjust HoarfrostDown otherwise. Thresholds are starting points.
+groups:
+  - name: hoarfrost-sources
+    rules:
+      - alert: HoarfrostSourceFailing
+        expr: hoarfrost_source_failing == 1
+        for: 2h
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: polls keep failing"
+          description: "Feeds or sitemaps of {{ $labels.source }} cannot be fetched or parsed (HTTP error, timeout, invalid XML). The error is shown on the Sources page."
+
+      - alert: HoarfrostSourceStale
+        expr: >
+          time() - hoarfrost_source_last_success_timestamp_seconds
+            > clamp_min(3 * hoarfrost_source_poll_interval_seconds, 6 * 3600)
+        labels: {severity: critical}
+        annotations:
+          summary: "Source {{ $labels.source }}: no successful poll for {{ $value | humanizeDuration }}"
+          description: "New articles of {{ $labels.source }} are not being discovered."
+
+      - alert: HoarfrostSourceEmpty
+        expr: hoarfrost_source_urls_found == 0 unless hoarfrost_source_failing == 1
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: feeds and sitemaps return no URLs"
+          description: "Polls succeed but find nothing: the feed or sitemap moved, changed format or is empty."
+
+      - alert: HoarfrostSourceNotPolled
+        expr: >
+          time() - hoarfrost_source_last_poll_timestamp_seconds
+            > 3 * hoarfrost_source_poll_interval_seconds + 3600
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }} is not being polled"
+          description: "The coordinator's scheduler is not running polls (stuck or crashing)."
+
+  - name: hoarfrost-captures
+    rules:
+      - alert: HoarfrostAccessDenied
+        expr: sum by (source) (increase(hoarfrost_capture_failures_total{reason=~"http_401|http_403"}[1h])) > 3
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: pages answer 401/403"
+          description: "The site requires login, blocks the archive's IP address or User-Agent, or put articles behind a paywall."
+
+      - alert: HoarfrostRateLimited
+        expr: sum by (source) (increase(hoarfrost_capture_failures_total{reason="http_429"}[1h])) > 10
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: rate limited (HTTP 429)"
+          description: "Lower max_per_domain or poll less often."
+
+      - alert: HoarfrostCaptureErrorRate
+        expr: >
+          sum by (source) (increase(hoarfrost_capture_failures_total[1h]))
+            / (sum by (source) (increase(hoarfrost_captures_total[1h])) + sum by (source) (increase(hoarfrost_capture_failures_total[1h])))
+            > 0.5
+          and sum by (source) (increase(hoarfrost_capture_failures_total[1h])) > 5
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: over half of capture attempts fail"
+          description: "See failed jobs on the Queue page; hoarfrost_capture_failures_total has the reasons."
+
+      - alert: HoarfrostStorageErrors
+        expr: sum(increase(hoarfrost_capture_failures_total{reason="storage"}[15m])) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Captures cannot be written to storage"
+          description: "Disk full, S3 credentials or permissions, or a storage not configured on a worker."
+
+      - alert: HoarfrostEngineErrors
+        expr: sum by (source) (increase(hoarfrost_capture_failures_total{reason="engine"}[1h])) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "Source {{ $labels.source }}: capture engine errors"
+          description: "Often Chromium failing to start or crashing (chrome engine)."
+
+      - alert: HoarfrostNoCaptures
+        expr: >
+          sum(increase(hoarfrost_captures_total[3h])) == 0
+          and on () sum(hoarfrost_queue_jobs{state="queued"}) > 0
+        for: 30m
+        labels: {severity: critical}
+        annotations:
+          summary: "Jobs are queued but nothing has been captured for 3 hours"
+
+      - alert: HoarfrostQueueGrowing
+        expr: hoarfrost_queue_jobs{state="queued"} > 1000 and delta(hoarfrost_queue_jobs{state="queued"}[3h]) > 0
+        for: 3h
+        labels: {severity: info}
+        annotations:
+          summary: "The queue keeps growing ({{ $value }} jobs)"
+          description: "Capture is slower than discovery; consider adding workers."
+
+      - alert: HoarfrostNoWorkers
+        expr: hoarfrost_workers == 0
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "No worker has contacted the coordinator"
+
+  - name: hoarfrost-archive
+    rules:
+      - alert: HoarfrostSealFailed
+        expr: hoarfrost_seal_errors > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Sealing a week failed in storage {{ $labels.storage }}"
+          description: "The error is shown under System; the coordinator log has details."
+
+      - alert: HoarfrostVerificationFailed
+        expr: hoarfrost_epochs{state="failed"} > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value }} weekly package(s) in storage {{ $labels.storage }} failed verification"
+          description: "Run `hoarfrost verify -storage {{ $labels.storage }}` and see catalog/<year>/W<week>.json."
+
+      - alert: HoarfrostWeekNotSealed
+        expr: time() - hoarfrost_oldest_unsealed_epoch_end_timestamp_seconds > 86400
+        labels: {severity: warning}
+        annotations:
+          summary: "A week of storage {{ $labels.storage }} ended over a day ago and is not sealed"
+          description: "Sealing waits for active leases and HOARFROST_SEAL_GRACE; a stuck lease or failing seal keeps the week open."
+
+      - alert: HoarfrostBlocklistFailing
+        expr: hoarfrost_blocklist_failing == 1
+        for: 24h
+        labels: {severity: info}
+        annotations:
+          summary: "Block list {{ $labels.list }} cannot be refreshed"
+          description: "The previous copy stays in use."
+
+      - alert: HoarfrostDown
+        expr: up{job="hoarfrost"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "hoarfrost /metrics cannot be scraped"

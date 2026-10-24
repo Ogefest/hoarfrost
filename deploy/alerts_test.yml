@@ -1,0 +1,100 @@
+# Unit tests of alerts.yml: promtool test rules deploy/alerts_test.yml
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  # "news" polls hourly and broke at 1h; "quiet" works but finds nothing;
+  # "ok" is healthy. Timestamps are seconds since the test start.
+  - interval: 1m
+    input_series:
+      - series: 'hoarfrost_source_failing{job="hoarfrost",source="news"}'
+        values: '0x59 1x600'
+      - series: 'hoarfrost_source_failing{job="hoarfrost",source="quiet"}'
+        values: '0x660'
+      - series: 'hoarfrost_source_failing{job="hoarfrost",source="ok"}'
+        values: '0x660'
+      - series: 'hoarfrost_source_last_success_timestamp_seconds{job="hoarfrost",source="news"}'
+        values: '0x660'
+      - series: 'hoarfrost_source_last_success_timestamp_seconds{job="hoarfrost",source="ok"}'
+        values: '0+60x660'
+      - series: 'hoarfrost_source_last_poll_timestamp_seconds{job="hoarfrost",source="ok"}'
+        values: '0+60x660'
+      - series: 'hoarfrost_source_poll_interval_seconds{job="hoarfrost",source="news"}'
+        values: '3600x660'
+      - series: 'hoarfrost_source_poll_interval_seconds{job="hoarfrost",source="ok"}'
+        values: '3600x660'
+      - series: 'hoarfrost_source_urls_found{job="hoarfrost",source="news"}'
+        values: '0x660'
+      - series: 'hoarfrost_source_urls_found{job="hoarfrost",source="quiet"}'
+        values: '0x660'
+      - series: 'hoarfrost_source_urls_found{job="hoarfrost",source="ok"}'
+        values: '40x660'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: HoarfrostSourceFailing
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: HoarfrostSourceFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hoarfrost, source: news}
+            exp_annotations:
+              summary: "Source news: polls keep failing"
+              description: "Feeds or sitemaps of news cannot be fetched or parsed (HTTP error, timeout, invalid XML). The error is shown on the Sources page."
+      - eval_time: 5h
+        alertname: HoarfrostSourceStale
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: HoarfrostSourceStale
+        exp_alerts:
+          - exp_labels: {severity: critical, job: hoarfrost, source: news}
+            exp_annotations:
+              summary: "Source news: no successful poll for 7h 0m 0s"
+              description: "New articles of news are not being discovered."
+      - eval_time: 7h
+        alertname: HoarfrostSourceEmpty
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hoarfrost, source: quiet}
+            exp_annotations:
+              summary: "Source quiet: feeds and sitemaps return no URLs"
+              description: "Polls succeed but find nothing: the feed or sitemap moved, changed format or is empty."
+      - eval_time: 7h
+        alertname: HoarfrostSourceNotPolled
+        exp_alerts: []
+
+  # Paywall: five 401s within an hour for "paper", a single 404 for "ok".
+  - interval: 1m
+    input_series:
+      - series: 'hoarfrost_capture_failures_total{job="hoarfrost",source="paper",reason="http_401"}'
+        values: '0 1 2 3 4 5 5 5 5 5'
+      - series: 'hoarfrost_capture_failures_total{job="hoarfrost",source="ok",reason="http_404"}'
+        values: '0 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HoarfrostAccessDenied
+        exp_alerts:
+          - exp_labels: {severity: warning, source: paper}
+            exp_annotations:
+              summary: "Source paper: pages answer 401/403"
+              description: "The site requires login, blocks the archive's IP address or User-Agent, or put articles behind a paywall."
+
+  - interval: 1m
+    input_series:
+      - series: 'hoarfrost_seal_errors{job="hoarfrost",storage="default"}'
+        values: '0 0 1 1'
+      - series: 'hoarfrost_epochs{job="hoarfrost",storage="default",state="failed"}'
+        values: '0 0 0 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HoarfrostSealFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, job: hoarfrost, storage: default}
+            exp_annotations:
+              summary: "Sealing a week failed in storage default"
+              description: "The error is shown under System; the coordinator log has details."
+      - eval_time: 3m
+        alertname: HoarfrostVerificationFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, job: hoarfrost, storage: default, state: failed}
+            exp_annotations:
+              summary: "1 weekly package(s) in storage default failed verification"
+              description: "Run `hoarfrost verify -storage default` and see catalog/<year>/W<week>.json."

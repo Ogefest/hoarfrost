@@ -14,7 +14,7 @@
     <td class="small">{{range .Source.Feeds}}<div>RSS {{.}}</div>{{end}}{{range .Source.Sitemaps}}<div>sitemap {{.}}</div>{{end}}{{range .Source.URLs}}<div>URL {{.}}</div>{{end}}</td>
     <td>{{.Resolved.Engine}}{{with .Resolved.Options.Fallback}} → {{.}}{{end}}</td>
     <td>{{dur .Resolved.Poll}}</td>
-    <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}</td>
+    <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}{{if and .Status.Error (not .Status.LastSuccess.IsZero)}}<br><span class="muted">last success <span title="{{datetime .Status.LastSuccess}}">{{ago .Status.LastSuccess}}</span></span>{{end}}</td>
     <td>{{if .Source.IsEnabled}}{{until .NextPoll}}{{else}}<span class="muted">disabled</span>{{end}}</td>
     <td class="num">{{.Stats.Pages}}</td>
     <td class="num {{if gt .Stats.FallbackRatio 0.3}}warn{{end}}">{{pct .Stats.FallbackRatio}}</td>

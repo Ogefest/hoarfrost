@@ -657,3 +657,54 @@ func TestSourceManagementAndPollState(t *testing.T) {
 		t.Fatalf("poll of a deleted source: %v", err)
 	}
 }
+
+func TestAlertingMetrics(t *testing.T) {
+	e := newEnv(t, "sources: []\n", time.Minute)
+	ctx := context.Background()
+	for _, s := range []config.Source{
+		{Name: "ok", Feeds: []string{e.site.URL + "/rss.xml"}},
+		{Name: "broken", Sitemaps: []string{e.site.URL + "/missing-sitemap.xml"}},
+		{Name: "off", Feeds: []string{e.site.URL + "/rss.xml"}, Enabled: new(bool)},
+	} {
+		if err := e.coord.SaveSource(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.coord.PollSources(ctx, false); err == nil || !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("poll error %v", err)
+	}
+	if _, err := e.coord.AddURL(ctx, coordinator.URLRequest{URL: e.site.URL + "/gone.html", Source: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	e.drain(e.worker("remote", true)) // the reason travels through the internal API
+
+	rr := httptest.NewRecorder()
+	e.coord.Metrics.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/metrics", nil))
+	body := rr.Body.String()
+	for _, want := range []string{
+		`hoarfrost_source_failing{source="broken"} 1`,
+		`hoarfrost_source_failing{source="ok"} 0`,
+		`hoarfrost_source_poll_errors_total{source="broken"} 1`,
+		`hoarfrost_source_urls_found{source="ok"} 2`,
+		`hoarfrost_source_urls_found{source="broken"} 0`,
+		`hoarfrost_source_poll_interval_seconds{source="ok"} 3600`,
+		`hoarfrost_source_last_success_timestamp_seconds{source="ok"}`,
+		`hoarfrost_source_last_poll_timestamp_seconds{source="broken"}`,
+		`hoarfrost_capture_failures_total{reason="http_404",source="ok"} 1`,
+		`hoarfrost_epochs{state="open",storage="default"} 1`,
+		`hoarfrost_oldest_unsealed_epoch_end_timestamp_seconds{storage="default"}`,
+		`hoarfrost_seal_errors{storage="default"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics lack %s", want)
+		}
+	}
+	for _, unwanted := range []string{`hoarfrost_source_last_success_timestamp_seconds{source="broken"}`, `source="off"`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("metrics have %s", unwanted)
+		}
+	}
+	if st := e.coord.SourceStatuses(ctx)["ok"]; st.LastSuccess.IsZero() || !st.LastSuccess.Equal(st.LastPoll) {
+		t.Fatalf("status %+v", st)
+	}
+}

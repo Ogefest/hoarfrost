@@ -249,7 +249,7 @@ func (c *Coordinator) Complete(ctx context.Context, comp worker.Completion) erro
 		return err
 	}
 	if comp.Error != "" {
-		c.Metrics.failure(job.Source)
+		c.Metrics.failure(job.Source, comp.Reason)
 	}
 	if !changed {
 		return nil
@@ -467,6 +467,7 @@ func (c *Coordinator) poll(ctx context.Context, src *config.Sources, s config.So
 	}
 	if pollErr != nil {
 		st.Error = pollErr.Error()
+		c.Metrics.pollError(s.Name)
 	}
 	if err := c.opts.Sources.RecordPoll(ctx, s.Name, st); err != nil {
 		return err

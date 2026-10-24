@@ -108,7 +108,7 @@ func (s *Server) Handler() http.Handler {
 	viewer("POST /account/tokens", s.createToken)
 	viewer("POST /account/tokens/{id}/delete", s.deleteToken)
 	viewer("POST /account/password", s.changePassword)
-	viewer("GET /metrics", func(w http.ResponseWriter, r *http.Request) { s.Coord.Metrics.Handler().ServeHTTP(w, r) })
+	reader("GET /metrics", func(w http.ResponseWriter, r *http.Request) { s.Coord.Metrics.Handler().ServeHTTP(w, r) })
 
 	editor("GET /sources", s.sourcesPage)
 	editor("GET /sources/new", s.newSourcePage)

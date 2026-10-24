@@ -101,6 +101,10 @@ CREATE TABLE api_keys (
   expires    TIMESTAMPTZ,
   last_used  TIMESTAMPTZ
 );
+`, `
+-- Time of the last poll without errors, for alerting on failing sources.
+ALTER TABLE sources ADD COLUMN last_success TIMESTAMPTZ;
+UPDATE sources SET last_success = last_poll WHERE last_error IS NULL;
 `}
 
 // Open connects to the database at url, uses schema (Schema in production)

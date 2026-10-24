@@ -279,9 +279,99 @@ test (`scripts/exit-test.sh`) check packages with `warcio`, `py-wacz`, `pywb`,
 
 ## Monitoring
 
-`/metrics` exposes Prometheus metrics (authenticate with an API token):
-captures, failures and fallbacks per source, records by type, queue sizes,
-bytes per epoch, deduplication savings and workers.
+`GET /healthz` answers `ok` while the process serves HTTP. `GET /metrics`
+exposes Prometheus metrics; authenticate with a read-only API key (System →
+API keys) or a user token:
+
+```yaml
+scrape_configs:
+  - job_name: hoarfrost
+    scheme: https
+    authorization:
+      credentials_file: /etc/prometheus/hoarfrost.key   # hfr_…
+    static_configs:
+      - targets: [archive.example.org]
+```
+
+Problems are also visible without Prometheus: the last poll error of each
+source (and its last success) on the Sources page, failed jobs with their
+reason on the Queue page, seal and verification results under System, and
+warnings in the log (`source poll`, `seal`, `block lists`, `capture failed`).
+
+### Metrics
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `hoarfrost_source_failing` | `source` | 1 when the last poll of the feeds and sitemaps reported an error: HTTP error, timeout, invalid XML, also when only one sitemap of an index failed |
+| `hoarfrost_source_last_success_timestamp_seconds` | `source` | last poll without errors (kept in the database across restarts) |
+| `hoarfrost_source_last_poll_timestamp_seconds` | `source` | last poll, successful or not |
+| `hoarfrost_source_poll_interval_seconds` | `source` | the source's poll interval, for thresholds relative to it |
+| `hoarfrost_source_urls_found` | `source` | URLs found by the last poll; 0 for a working source usually means the feed moved or changed format |
+| `hoarfrost_source_poll_errors_total` | `source` | failed polls since the start |
+| `hoarfrost_captures_total` | `source` | captures committed to the archive |
+| `hoarfrost_capture_failures_total` | `source`, `reason` | failed capture attempts (see below) |
+| `hoarfrost_fallbacks_total` | `source` | captures repeated with the fallback engine because the text was too short (also a hint of consent walls and paywalls) |
+| `hoarfrost_queue_jobs` | `state` | jobs by state: `queued`, `leased`, `done`, `failed` |
+| `hoarfrost_workers` | | workers seen in the last hour |
+| `hoarfrost_epochs` | `storage`, `state` | weeks by state: `open`, `sealing`, `sealed`, `verified`, `failed` (verification failed) |
+| `hoarfrost_oldest_unsealed_epoch_end_timestamp_seconds` | `storage` | end of the oldest week that is not sealed yet |
+| `hoarfrost_seal_errors` | `storage` | weeks whose last sealing attempt failed |
+| `hoarfrost_blocklist_failing` | `list` | 1 when the last refresh of a block list failed |
+| `hoarfrost_records_total`, `hoarfrost_capture_bytes_total`, `hoarfrost_archive_bytes`, `hoarfrost_pages`, `hoarfrost_revisit_records`, `hoarfrost_dedup_saved_bytes`, `hoarfrost_blocklist_rules` | | volume and deduplication |
+
+Source metrics cover enabled sources only, so disabling a source silences
+its alerts. Counters start from zero when the coordinator restarts; use
+`increase()` or `rate()`.
+
+`reason` of `hoarfrost_capture_failures_total` is one of:
+
+| Reason | Cause |
+|---|---|
+| `http_401`, `http_403` | login required, paywall, IP address or User-Agent blocked |
+| `http_404`, `http_410` | the page was removed before it was captured, or a broken link |
+| `http_429` | rate limited: lower `max_per_domain` |
+| `http_4xx`, `http_5xx` | other client and server errors (5xx and 429 are retried) |
+| `timeout`, `network` | timeouts, DNS errors, refused connections, TLS errors |
+| `blocked` | the URL's host is on a block list or the source's blocked domains |
+| `storage` | the capture could not be uploaded, or the worker lacks the storage |
+| `blocklist` | the worker could not load the block lists from the coordinator |
+| `engine` | engine or recorder failure, e.g. Chromium did not start |
+| `other` | reported by a worker of an older version |
+
+The page of an HTTP error response is still stored in the archive, as
+evidence of what the server returned.
+
+### Alerts
+
+[`deploy/alerts.yml`](../deploy/alerts.yml) contains ready Prometheus rules,
+unit-tested in CI with `promtool test rules deploy/alerts_test.yml`:
+
+| Alert | Fires when |
+|---|---|
+| `HoarfrostSourceFailing` | a source's polls have been failing for 2 hours |
+| `HoarfrostSourceStale` | no successful poll for 3 poll intervals (at least 6 hours) |
+| `HoarfrostSourceEmpty` | polls succeed but find no URLs for 6 hours |
+| `HoarfrostSourceNotPolled` | the scheduler has not polled a source for 3 intervals |
+| `HoarfrostAccessDenied` | more than 3 pages of a source answered 401/403 within an hour |
+| `HoarfrostRateLimited` | more than 10 answers 429 within an hour |
+| `HoarfrostCaptureErrorRate` | over half of a source's capture attempts failed for an hour |
+| `HoarfrostStorageErrors` | any capture could not be written to storage |
+| `HoarfrostEngineErrors` | repeated engine failures (Chromium) |
+| `HoarfrostNoCaptures` | jobs are queued but nothing was captured for 3 hours |
+| `HoarfrostQueueGrowing` | more than 1000 queued jobs and still growing |
+| `HoarfrostNoWorkers` | no worker contacted the coordinator for 15 minutes |
+| `HoarfrostSealFailed` | sealing a week failed |
+| `HoarfrostVerificationFailed` | a weekly package failed verification |
+| `HoarfrostWeekNotSealed` | a week ended over a day ago and is still open |
+| `HoarfrostBlocklistFailing` | a block list could not be refreshed for a day |
+| `HoarfrostDown` | the scrape fails (assumes the job name `hoarfrost`) |
+
+```yaml
+# prometheus.yml
+rule_files: [/etc/prometheus/hoarfrost-alerts.yml]
+```
+
+Thresholds are starting points; copy the file and tune them to your sources.
 
 ## Security notes
 
