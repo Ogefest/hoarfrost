@@ -1,0 +1,90 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_USER: hoarfrost, POSTGRES_PASSWORD: hoarfrost, POSTGRES_DB: hoarfrost_test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
+    env:
+      HOARFROST_TEST_DATABASE: postgres://hoarfrost:hoarfrost@127.0.0.1:5432/hoarfrost_test?sslmode=disable
+      HOARFROST_TEST_DATABASE_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+        env: { HOARFROST_E2E_SKIP: "1" }
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: golangci/golangci-lint-action@v8
+        with: { version: v2.5.0 }
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: make fuzz
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env: { POSTGRES_USER: hoarfrost, POSTGRES_PASSWORD: hoarfrost, POSTGRES_DB: hoarfrost_test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
+    env:
+      HOARFROST_TEST_DATABASE: postgres://hoarfrost:hoarfrost@127.0.0.1:5432/hoarfrost_test?sslmode=disable
+      HOARFROST_TEST_DATABASE_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Conformance tools (independent implementations)
+        run: |
+          pip install warcio wacz pywb
+          sudo apt-get update && sudo apt-get install -y poppler-utils rclone unzip
+      - name: S3 server with credentials
+        run: |
+          docker run -d --name s3auth -p 18333:8333 -v $PWD/deploy/seaweedfs-s3.json:/etc/s3.json:ro \
+            chrislusf/seaweedfs server -s3 -s3.config=/etc/s3.json -dir=/data
+          for i in $(seq 60); do curl -sf http://127.0.0.1:18333/status && break; sleep 1; done
+          AWS_ACCESS_KEY_ID=hoarfrost AWS_SECRET_ACCESS_KEY=hoarfrost-secret aws --endpoint-url http://127.0.0.1:18333 --region us-east-1 s3 mb s3://ci
+      - name: Conformance with independent tools (required)
+        env: { HOARFROST_CONFORMANCE: required }
+        run: go test -count=1 -v ./conformance ./internal/cdxj
+      - name: End-to-end on the filesystem backend (with chrome, warcio, py-wacz, pywb, exit test)
+        env: { HOARFROST_CONFORMANCE: required }
+        run: go test -count=1 -v ./e2e ./internal/engine/chrome
+      - name: Storage contract and end-to-end on S3
+        env:
+          AWS_ACCESS_KEY_ID: hoarfrost
+          AWS_SECRET_ACCESS_KEY: hoarfrost-secret
+          HOARFROST_TEST_S3: s3://ci/run?endpoint=http://127.0.0.1:18333&region=us-east-1&path_style=true
+        run: go test -count=1 -v -run 'TestS3RealContract|TestEndToEnd' ./internal/storage ./e2e
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with: { push: false, tags: "hoarfrost:ci" }

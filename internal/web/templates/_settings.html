@@ -1,0 +1,70 @@
+{{define "settingsFields"}}
+{{$f := .F}}{{$in := .C.Inherited}}
+<div class="form-grid">
+  <label>Engine
+    <select name="engine">
+      <option value="">{{if .Defaults}}built-in{{else}}inherit{{end}} ({{$in.Engine}})</option>
+      {{range .C.Engines}}<option {{if eq . $f.Engine}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Fallback engine <span class="muted">when the text is too short</span>
+    <select name="fallback">
+      <option value="">{{if .Defaults}}built-in{{else}}inherit{{end}} ({{with $in.Options.Fallback}}{{.}}{{else}}none{{end}})</option>
+      <option value="none" {{if eq "none" $f.Fallback}}selected{{end}}>none</option>
+      {{range .C.Engines}}<option {{if eq . $f.Fallback}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Poll every
+    <input name="poll" value="{{$f.Poll}}" placeholder="{{dur $in.Poll}}">
+  </label>
+  <label>Skip entries older than
+    <input name="max_age" value="{{$f.MaxAge}}" placeholder="{{if $in.MaxAge}}{{dur $in.MaxAge}}{{else}}no limit{{end}}">
+  </label>
+  <label>Storage
+    <select name="storage">
+      <option value="">{{if .Defaults}}built-in{{else}}inherit{{end}} ({{$in.Storage}})</option>
+      {{range .C.Storages}}<option {{if eq . $f.Storage}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Minimum text length <span class="muted">(characters)</span>
+    <input name="min_text_chars" value="{{$f.MinTextChars}}" inputmode="numeric" placeholder="{{$in.Options.MinTextChars}}">
+  </label>
+</div>
+<details>
+  <summary>More settings</summary>
+  <div class="form-grid">
+    <label>Queue priority <span class="muted">(lower first)</span>
+      <input name="priority" value="{{$f.Priority}}" inputmode="numeric" placeholder="{{$in.Priority}}">
+    </label>
+    <label>Maximum response size
+      <input name="max_size" value="{{$f.MaxSize}}" placeholder="{{size $in.Options.MaxResponseSize}}">
+    </label>
+    <label>Attachments (PDF, DOCX…)
+      <select name="attachments">
+        <option value="">{{if .Defaults}}built-in{{else}}inherit{{end}} ({{if $in.Options.Attachments}}yes{{else}}no{{end}})</option>
+        <option value="yes" {{if eq "yes" $f.Attachments}}selected{{end}}>yes</option>
+        <option value="no" {{if eq "no" $f.Attachments}}selected{{end}}>no</option>
+      </select>
+    </label>
+    <label>User-Agent
+      <input name="user_agent" value="{{$f.UserAgent}}" placeholder="{{with $in.Options.UserAgent}}{{.}}{{else}}instance default{{end}}">
+    </label>
+    <label>Chrome: scroll the page
+      <select name="chrome_scroll">
+        <option value="">{{if .Defaults}}built-in{{else}}inherit{{end}} ({{if $in.Options.ChromeScroll}}yes{{else}}no{{end}})</option>
+        <option value="yes" {{if eq "yes" $f.ChromeScroll}}selected{{end}}>yes</option>
+        <option value="no" {{if eq "no" $f.ChromeScroll}}selected{{end}}>no</option>
+      </select>
+    </label>
+    <label>Chrome: wait after load
+      <input name="chrome_wait" value="{{$f.ChromeWait}}" placeholder="{{if $in.Options.ChromeWait}}{{dur $in.Options.ChromeWait}}{{else}}engine default{{end}}">
+    </label>
+    <label>Blocked domains <span class="muted">one per line{{if not .Defaults}}, added to the defaults{{end}}</span>
+      <textarea name="block" rows="3" spellcheck="false">{{$f.Block}}</textarea>
+    </label>
+    <label>Iframes not captured <span class="muted">domains, one per line</span>
+      <textarea name="skip_frames" rows="3" spellcheck="false">{{$f.SkipFrames}}</textarea>
+    </label>
+  </div>
+</details>
+{{end}}

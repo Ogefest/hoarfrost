@@ -1,0 +1,82 @@
+{{define "task"}}
+<div id="task" {{if .Data.Task}}hx-get="/system/tasks" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+  {{if .Data.Task}}<p><b>{{.Data.Task}}</b>: {{.Data.TaskState}}</p>{{else}}<p class="muted">No task running.</p>{{end}}
+  {{with .Data.TaskLast}}<p class="muted">Last: {{.}}</p>{{end}}
+</div>
+{{end}}
+{{define "content"}}
+{{$d := .Data}}
+<h1>System</h1>
+<nav class="tabs"><a href="/system" class="active">Overview</a><a href="/system/keys">API keys</a></nav>
+<div class="grid2">
+<section class="card">
+  <h2>Storage</h2>
+  <ul class="plain">{{range $d.Storage}}<li><code>{{.}}</code></li>{{end}}</ul>
+  <p class="muted">Each storage is a complete, independent archive (own weekly packages, README and catalog).</p>
+  <h2>Tasks</h2>
+  {{template "task" .}}
+  <form method="post" action="/system/reindex" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="epoch" placeholder="week, e.g. {{$d.Current}} (empty: all)">
+    <label class="inline"><input type="checkbox" name="force" value="1"> force</label>
+    <button>{{icon "history"}}Reindex from storage</button>
+  </form>
+  <form method="post" action="/system/verify-all" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button>{{icon "shield-check"}}Check integrity of all packages</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Workers</h2>
+  <table class="compact">{{range $d.Workers}}<tr><td>{{.Name}}</td><td>{{ago .LastSeen}}</td></tr>{{else}}<tr><td class="muted">None seen.</td></tr>{{end}}</table>
+</section>
+</div>
+
+<section class="card">
+  <h2>Weeks</h2>
+  <table class="results">
+    <tr><th>Week</th><th>Storage</th><th>State</th><th class="num">Size</th><th>Sealed</th><th>Verified</th><th>SHA-256</th><th></th></tr>
+    {{range $d.Epochs}}
+    <tr>
+      <td>{{.Epoch}}{{if eq .Epoch $d.Current}} <span class="tag">current</span>{{end}}</td>
+      <td>{{.Storage}}</td>
+      <td><span class="state state-{{.State}}">{{.State}}</span>{{with .Error}}<br><span class="warn small">{{.}}</span>{{end}}</td>
+      <td class="num">{{bytes (index $d.Sizes (printf "%s/%s" .Storage .Epoch))}}</td><td>{{datetime .SealedAt}}</td><td>{{datetime .VerifiedAt}}</td>
+      <td><code class="small">{{truncate .SHA256 16}}</code></td>
+      <td class="nowrap">
+        {{if .WACZKey}}<form method="post" action="/system/epochs/{{.Storage}}/{{.Epoch}}/verify" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Verify</button></form>{{end}}
+        {{if or (eq .State "open") (eq .State "failed")}}{{if not .WACZKey}}
+        <form method="post" action="/system/epochs/{{.Storage}}/{{.Epoch}}/seal" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="force" value="1"><button>Seal now</button></form>
+        {{end}}{{end}}
+      </td>
+    </tr>
+    {{else}}<tr><td colspan="8" class="muted">No data yet.</td></tr>{{end}}
+  </table>
+</section>
+
+<section class="card">
+  <h2>Users</h2>
+  <table class="results">
+    <tr><th>Login</th><th>Role</th><th>Created</th><th></th></tr>
+    {{range $d.Users}}
+    <tr><td>{{.Login}}</td><td>{{.Role}}</td><td>{{date .Created}}</td>
+      <td class="nowrap">{{if ne .Login $.User.Login}}
+        <form method="post" action="/system/users/{{.Login}}/role" class="inline">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <select name="role">{{$role := .Role}}{{range (list "viewer" "editor" "admin")}}<option {{if eq . $role}}selected{{end}}>{{.}}</option>{{end}}</select>
+          <input name="password" type="password" placeholder="new password (optional)" autocomplete="new-password">
+          <button>Save</button>
+        </form>
+        <form method="post" action="/system/users/{{.Login}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger">Delete</button></form>
+      {{end}}</td></tr>
+    {{end}}
+  </table>
+  <form method="post" action="/system/users" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="login" placeholder="login" required>
+    <input name="password" type="password" placeholder="password (min. 5)" minlength="5" required autocomplete="new-password">
+    <select name="role"><option>viewer</option><option>editor</option><option>admin</option></select>
+    <button class="primary">Add user</button>
+  </form>
+</section>
+{{end}}

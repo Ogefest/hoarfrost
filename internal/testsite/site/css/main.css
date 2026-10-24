@@ -1,0 +1,4 @@
+@import "fonts.css";
+@import url(print.css) print;
+body { background: url(../img/bg.png) repeat-x; }
+.logo { background-image: image-set("../img/logo.png" 1x, "../img/logo2x.png" 2x); }

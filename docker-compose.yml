@@ -1,0 +1,66 @@
+# Development and end-to-end environment: PostgreSQL, the deterministic test
+# site, a coordinator with an embedded worker and one additional worker. The
+# archive is kept on the host in HOARFROST_ARCHIVE_DIR (default ./archive,
+# filesystem storage), so WACZ/WARC files can be inspected directly.
+# Containers run as the host user (HOARFROST_UID/HOARFROST_GID, default 1000)
+# so the files are owned by you.
+#
+#   docker compose up --build
+#   open http://localhost:8080, create the administrator and add a source on
+#   the Sources page, e.g. the test site feed http://testsite:8000/rss.xml.
+#
+# Set HOARFROST_DATABASE (in .env) to use another PostgreSQL server. Local
+# changes belong in docker-compose.override.yml, which git ignores.
+name: hoarfrost
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: hoarfrost
+      POSTGRES_PASSWORD: hoarfrost
+      POSTGRES_DB: hoarfrost
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hoarfrost"]
+      interval: 2s
+      retries: 30
+
+  testsite:
+    build: .
+    entrypoint: ["hoarfrost-testsite", "-addr", ":8000", "-base", "http://testsite:8000"]
+
+  hoarfrost:
+    build: .
+    depends_on:
+      postgres: {condition: service_healthy}
+      testsite: {condition: service_started}
+    user: "${HOARFROST_UID:-1000}:${HOARFROST_GID:-1000}"
+    environment: &env
+      HOME: /var/lib/hoarfrost
+      HOARFROST_DATABASE: ${HOARFROST_DATABASE:-postgres://hoarfrost:hoarfrost@postgres:5432/hoarfrost?sslmode=disable}
+      HOARFROST_STORAGE: file:///srv/archive
+      HOARFROST_SECRET: change-me-to-32-or-more-random-characters
+      HOARFROST_WORKER_TOKEN: change-me-worker-token
+      HOARFROST_INSECURE_COOKIE: "true"
+      HOARFROST_SEAL_GRACE: 1h
+    volumes:
+      - hoarfrost:/var/lib/hoarfrost
+      - ${HOARFROST_ARCHIVE_DIR:-./archive}:/srv/archive
+    ports: ["127.0.0.1:${HOARFROST_PORT:-8080}:8080"]
+
+  worker:
+    build: .
+    depends_on: [hoarfrost]
+    user: "${HOARFROST_UID:-1000}:${HOARFROST_GID:-1000}"
+    command: ["worker", "-coordinator", "http://hoarfrost:8080"]
+    environment:
+      <<: *env
+      HOARFROST_WORKER_NAME: compose-worker
+    tmpfs: ["/var/lib/hoarfrost:mode=1777"]  # spool only; the image directory belongs to the image user
+    volumes:
+      - ${HOARFROST_ARCHIVE_DIR:-./archive}:/srv/archive
+
+volumes:
+  hoarfrost:
+  postgres:

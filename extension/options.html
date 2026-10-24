@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>hoarfrost settings</title><link rel="stylesheet" href="style.css"></head>
+<body class="wide">
+  <h1>hoarfrost settings</h1>
+  <label>Server URL <input id="server" placeholder="https://archive.example.org"></label>
+  <label>API token <input id="token" type="password" placeholder="hf_…"></label>
+  <label>Storage (optional) <input id="storage" placeholder="default"></label>
+  <label><input type="checkbox" id="queue"> by default also queue the URL for an HTTP capture</label>
+  <button id="save">Save</button>
+  <p id="status"></p>
+  <p class="muted">Create a token in hoarfrost under Account → API tokens (editor role or higher).</p>
+  <script src="options.js"></script>
+</body></html>

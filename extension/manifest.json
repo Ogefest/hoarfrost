@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "hoarfrost: archive this page",
+  "version": "1.0.0",
+  "description": "Saves the current page as MHTML and uploads it to a hoarfrost archive.",
+  "permissions": ["pageCapture", "activeTab", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "action": { "default_title": "Archive this page", "default_popup": "popup.html" },
+  "options_page": "options.html"
+}

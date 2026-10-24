@@ -1,0 +1,50 @@
+{{define "content"}}
+{{$d := .Data}}
+<a class="back" href="/sources">← Sources</a>
+<h1>Capture settings</h1>
+<form method="post" action="/sources/settings/defaults" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <h2>Defaults for all sources</h2>
+  <p class="muted small">Sources inherit these values unless they set their own. Empty fields use the built-in values.</p>
+  {{template "settingsFields" (fields $d.Defaults $d.Choices true)}}
+  <div class="form-grid">
+    <label>Parallel captures per domain
+      <input name="max_per_domain" value="{{$d.MaxPerDomain}}" inputmode="numeric" placeholder="2">
+    </label>
+  </div>
+  <button class="primary">Save defaults</button>
+</form>
+
+<section class="card">
+  <h2>Block lists</h2>
+  <p class="muted">Requests to domains on these public lists (Pi-hole hosts files, domain lists, adblock <code>||domain^</code> rules)
+  are never made or archived; the archived page's own host is always allowed.
+  Active: {{$d.Rules}} rules{{with $d.Version}}, version <code>{{.}}</code>{{end}}.</p>
+  <table class="compact">
+    <tr><th>List</th><th class="num">Rules</th><th>Downloaded</th><th>Checked</th><th>Status</th></tr>
+    {{range $d.Blocklists}}
+    <tr><td class="url">{{.URL}}</td><td class="num">{{.Entries}}</td><td>{{ago .Fetched}}</td><td>{{ago .Checked}}</td>
+      <td>{{with .Error}}<span class="warn">{{.}}</span>{{else}}ok{{end}}</td></tr>
+    {{else}}<tr><td class="muted" colspan="5">Block lists disabled.</td></tr>{{end}}
+  </table>
+  <form method="post" action="/sources/settings/blocklists/update" class="row"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>Download now</button></form>
+  <form method="post" action="/sources/settings/blocklists">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-grid">
+      <label>List URLs <span class="muted">one per line; empty disables block lists{{if $d.DefaultLists}}; currently the default list{{end}}</span>
+        <textarea name="urls" rows="4" spellcheck="false">{{$d.ListURLs}}</textarea>
+      </label>
+      <label>Never block <span class="muted">domains, one per line</span>
+        <textarea name="allow" rows="4" spellcheck="false">{{$d.Allow}}</textarea>
+      </label>
+      <label>Refresh every
+        <input name="refresh" value="{{$d.Refresh}}" placeholder="24h">
+      </label>
+    </div>
+    <div class="row">
+      <button class="primary">Save block lists</button>
+      <button name="reset" value="1">Restore the default list</button>
+    </div>
+  </form>
+</section>
+{{end}}

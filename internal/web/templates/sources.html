@@ -1,0 +1,34 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Sources</h1>
+<div class="actions">
+  <a class="button primary" href="/sources/new">{{icon "plus"}}Add source</a>
+  <form method="post" action="/sources/poll" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>{{icon "refresh-cw"}}Poll all now</button></form>
+  <a class="button" href="/sources/settings">{{icon "settings-2"}}Defaults and block lists</a>
+</div>
+<table class="results">
+  <tr><th>Source</th><th>Inputs</th><th>Engine</th><th>Every</th><th>Last poll</th><th>Next poll</th><th class="num">Pages</th><th class="num">Fallback</th><th></th></tr>
+  {{range $d.Rows}}
+  <tr {{if not .Source.IsEnabled}}class="disabled"{{end}}>
+    <td><a href="/sources/{{.Source.Name}}/edit"><b>{{.Source.Name}}</b></a>{{if ne .Resolved.Storage "default"}}<br><span class="tag">{{.Resolved.Storage}}</span>{{end}}</td>
+    <td class="small">{{range .Source.Feeds}}<div>RSS {{.}}</div>{{end}}{{range .Source.Sitemaps}}<div>sitemap {{.}}</div>{{end}}{{range .Source.URLs}}<div>URL {{.}}</div>{{end}}</td>
+    <td>{{.Resolved.Engine}}{{with .Resolved.Options.Fallback}} → {{.}}{{end}}</td>
+    <td>{{dur .Resolved.Poll}}</td>
+    <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}</td>
+    <td>{{if .Source.IsEnabled}}{{until .NextPoll}}{{else}}<span class="muted">disabled</span>{{end}}</td>
+    <td class="num">{{.Stats.Pages}}</td>
+    <td class="num {{if gt .Stats.FallbackRatio 0.3}}warn{{end}}">{{pct .Stats.FallbackRatio}}</td>
+    <td class="nowrap">
+      <a class="button" href="/sources/{{.Source.Name}}/edit">Edit</a>
+      <button hx-post="/sources/{{.Source.Name}}/test" hx-target="next .result" hx-swap="innerHTML">Test</button>
+      <form method="post" action="/sources/{{.Source.Name}}/poll" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Poll now</button></form>
+      <form method="post" action="/sources/{{.Source.Name}}/toggle" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>{{if .Source.IsEnabled}}Disable{{else}}Enable{{end}}</button></form>
+      <div class="result small"></div>
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="9" class="muted">No sources yet. <a href="/sources/new">Add the first one</a>: an RSS/Atom feed, a sitemap or a list of URLs.</td></tr>{{end}}
+</table>
+<p class="muted small">Defaults: {{$d.Defaults.Engine}}{{with $d.Defaults.Options.Fallback}} → {{.}}{{end}}, every {{dur $d.Defaults.Poll}}, storage {{$d.Defaults.Storage}}.
+Block lists: {{$d.Rules}} rules{{with $d.Version}} (version <code>{{.}}</code>){{end}}. <a href="/sources/settings">Change</a>.
+Every change is copied to <code>config/sources/</code> in the archive.</p>
+{{end}}

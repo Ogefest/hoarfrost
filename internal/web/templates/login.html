@@ -1,0 +1,13 @@
+{{define "content"}}
+<section class="narrow card">
+  <h1>{{icon "snowflake"}} Sign in</h1>
+  {{with .Data.Error}}<div class="flash err">{{.}}</div>{{end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <label>Login <input name="login" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary wide">Sign in</button>
+  </form>
+  <p class="muted">Lost access? Run <code>hoarfrost user reset-password &lt;login&gt;</code> on the server.</p>
+</section>
+{{end}}

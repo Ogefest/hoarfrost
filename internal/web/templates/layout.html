@@ -1,0 +1,39 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
+<title>{{if .Title}}{{.Title}} · {{end}}hoarfrost</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css?v={{version}}">
+<script src="/static/htmx.min.js?v=2.0.4" defer></script>
+</head>
+<body{{if .CSRF}} hx-headers='{"X-CSRF-Token": "{{.CSRF}}"}'{{end}}>
+{{if .User.Login}}
+<header class="top">
+  <a class="brand" href="/">{{icon "snowflake"}}<span>hoarfrost</span></a>
+  <nav>
+    <a href="/" {{if eq .Path "/"}}class="active"{{end}}>{{icon "layout-dashboard"}}<span>Dashboard</span></a>
+    <a href="/archive" {{if or (under .Path "/archive") (under .Path "/page") (under .Path "/replay")}}class="active"{{end}}>{{icon "archive"}}<span>Archive</span></a>
+    {{if can .User.Role "editor"}}
+    <a href="/sources" {{if under .Path "/sources"}}class="active"{{end}}>{{icon "rss"}}<span>Sources</span></a>
+    <a href="/queue" {{if under .Path "/queue"}}class="active"{{end}}>{{icon "list-todo"}}<span>Queue</span></a>
+    {{end}}
+    {{if can .User.Role "admin"}}<a href="/system" {{if under .Path "/system"}}class="active"{{end}}>{{icon "server"}}<span>System</span></a>{{end}}
+  </nav>
+  <div class="who">
+    <a href="/account" title="Account">{{icon "circle-user"}}<span>{{.User.Login}}</span></a>
+    <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link" title="Sign out">{{icon "log-out"}}</button></form>
+  </div>
+</header>
+{{end}}
+<main>
+{{if .Message}}<div class="flash ok">{{.Message}}</div>{{end}}
+{{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
+{{template "content" .}}
+</main>
+<footer>hoarfrost {{version}} · data in WARC/WACZ, readable without this application</footer>
+</body>
+</html>{{end}}

@@ -1,0 +1,7 @@
+body { font: 14px system-ui, sans-serif; width: 280px; margin: 12px; }
+body.wide { width: auto; max-width: 480px; }
+h1 { font-size: 16px; margin: 0 0 8px; }
+label { display: block; margin: 8px 0; }
+label input:not([type=checkbox]) { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 4px; }
+button { width: 100%; padding: 6px; margin-top: 8px; }
+.muted { color: #666; word-break: break-all; }

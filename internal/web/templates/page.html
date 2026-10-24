@@ -1,0 +1,43 @@
+{{define "content"}}
+{{$d := .Data}}{{$p := $d.Page}}
+<a class="back" href="/archive">← Archive</a>
+<h1>{{if $p.Title}}{{$p.Title}}{{else}}(untitled){{end}}</h1>
+<p class="url"><a href="{{$p.URI}}" rel="noreferrer noopener" target="_blank">{{$p.URI}}</a></p>
+<div class="meta">
+  <span>Captured {{datetime $p.Captured}}</span>
+  {{with $p.Published}}<span>Published {{.}}</span>{{end}}
+  <span>Source <b>{{$p.Source}}</b></span>
+  <span>Storage <b>{{$p.Storage}}</b></span>
+  <span>Engine {{$p.Engine}}{{if $p.Fallback}} (fallback){{end}}</span>
+  <span>Week {{$p.Epoch}}</span>
+  {{with $p.Status}}<span>HTTP {{.}}</span>{{end}}
+</div>
+<div class="actions">
+  <a class="button" href="/page/{{$p.ID}}/preview" target="_blank">{{icon "external-link"}}Open preview</a>
+  {{if $d.HTML}}<a class="button" href="/api/export/{{$p.ID}}.html">{{icon "download"}}Download HTML</a>{{end}}
+  {{if $d.Replay}}<a class="button" href="/replay/{{$p.ID}}">{{icon "play"}}Full replay</a>{{else}}<span class="button disabled" title="Available after the week is sealed">{{icon "play"}}Full replay</span>{{end}}
+  {{with $d.Record.ID}}<a class="button" href="/api/record/{{urlquery .}}">{{icon "file-code"}}WARC record</a>{{end}}
+  {{if and (can $.User.Role "editor") (eq $p.Kind "attachment")}}
+  <form method="post" action="/page/{{$p.ID}}/ocr" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>{{icon "file-text"}}Run OCR</button></form>
+  {{end}}
+</div>
+
+<div class="grid-page">
+  <section class="card preview">
+    <iframe src="/page/{{$p.ID}}/preview" title="Archived page preview" loading="lazy"></iframe>
+  </section>
+  <aside>
+    <section class="card">
+      <h2>Captures of this URL</h2>
+      <ul class="plain timeline">
+        {{range $d.Captures}}<li {{if eq .ID $p.ID}}class="current"{{end}}><a href="/page/{{.ID}}">{{datetime .Captured}}</a> <span class="muted">{{.Engine}}{{if ne .Kind "page"}} · {{.Kind}}{{end}}</span></li>{{end}}
+      </ul>
+    </section>
+    <section class="card">
+      <h2>Text</h2>
+      {{with $d.MetaErr}}<div class="flash err">{{.}}</div>{{end}}
+      {{with $d.Meta}}<div class="text">{{.Text}}</div>{{end}}
+    </section>
+  </aside>
+</div>
+{{end}}

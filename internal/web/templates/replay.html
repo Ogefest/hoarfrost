@@ -1,0 +1,9 @@
+{{define "content"}}
+{{$d := .Data}}
+<a class="back" href="/page/{{$d.Page.ID}}">← {{$d.Page.Title}}</a>
+<p class="muted">Full replay with <a href="https://replayweb.page" rel="noreferrer">ReplayWeb.page</a> {{$d.Version}}, reading {{$d.Source}} directly with range requests.</p>
+<div class="replay">
+  <replay-web-page source="{{$d.Source}}" url="{{$d.Page.URI}}" ts="{{$d.TS}}" replayBase="/replay/" embed="replayonly"></replay-web-page>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/replaywebpage@{{$d.Version}}/ui.js"></script>
+{{end}}

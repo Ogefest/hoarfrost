@@ -1,0 +1,39 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Archive</h1>
+<form class="search card" method="get" action="/archive">
+  <input type="search" name="q" value="{{$d.Query.Q}}" placeholder="Search titles and text…" autofocus>
+  <select name="source"><option value="">All sources</option>
+    {{range $d.Sources}}<option {{if eq . $d.Query.Source}}selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  {{if gt (len $d.Storages) 1}}<select name="storage"><option value="">All storages</option>
+    {{range $d.Storages}}<option {{if eq . $d.Query.Storage}}selected{{end}}>{{.}}</option>{{end}}
+  </select>{{end}}
+  <input name="domain" value="{{$d.Query.Domain}}" placeholder="domain">
+  <select name="kind"><option value="">Pages and files</option>
+    <option value="page" {{if eq $d.Query.Kind "page"}}selected{{end}}>Pages</option>
+    <option value="attachment" {{if eq $d.Query.Kind "attachment"}}selected{{end}}>Attachments</option>
+    <option value="ocr" {{if eq $d.Query.Kind "ocr"}}selected{{end}}>OCR</option>
+  </select>
+  <label class="inline">from <input type="date" name="from" value="{{$d.FromStr}}"></label>
+  <label class="inline">to <input type="date" name="to" value="{{$d.ToStr}}"></label>
+  <button class="primary">{{icon "search"}}Search</button>
+</form>
+<p class="muted">{{$d.Total}} result(s)</p>
+<table class="results">
+  {{range $d.Results}}
+  <tr>
+    <td class="when">{{datetime .Captured}}</td>
+    <td><a href="/page/{{.ID}}">{{if .Title}}{{.Title}}{{else}}(untitled){{end}}</a><br><span class="url">{{.URI}}</span></td>
+    <td>{{if gt (len $d.Storages) 1}}<span class="tag">{{.Storage}}</span> {{end}}<span class="tag">{{.Source}}</span> {{if ne .Kind "page"}}<span class="tag">{{.Kind}}</span>{{end}} {{if .Fallback}}<span class="tag">fallback</span>{{end}}</td>
+  </tr>
+  {{end}}
+</table>
+{{if gt $d.Pages 1}}
+<nav class="pager">
+  {{if gt $d.Page 1}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "from" $d.FromStr "to" $d.ToStr "page" (sub $d.Page 1)}}">← Previous</a>{{end}}
+  <span>page {{$d.Page}} of {{$d.Pages}}</span>
+  {{if lt $d.Page $d.Pages}}<a href="{{query "/archive" "q" $d.Query.Q "source" $d.Query.Source "storage" $d.Query.Storage "domain" $d.Query.Domain "kind" $d.Query.Kind "from" $d.FromStr "to" $d.ToStr "page" (add $d.Page 1)}}">Next →</a>{{end}}
+</nav>
+{{end}}
+{{end}}

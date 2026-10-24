@@ -1,0 +1,31 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Account: {{.User.Login}} <span class="tag">{{.User.Role}}</span></h1>
+<div class="grid2">
+<section class="card">
+  <h2>API tokens</h2>
+  <p class="muted">Use as <code>Authorization: Bearer &lt;token&gt;</code> for the API, the browser extension or SingleFile uploads to <code>/api/upload</code>.</p>
+  {{with $d.NewToken}}<div class="flash ok">New token (shown once): <code class="select">{{.}}</code></div>{{end}}
+  <table class="compact">
+    {{range $d.Tokens}}<tr><td>{{.Name}}</td><td>created {{date .Created}}</td><td>used {{ago .LastUsed}}</td>
+      <td><form method="post" action="/account/tokens/{{.ID}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger">Revoke</button></form></td></tr>
+    {{else}}<tr><td class="muted">No tokens.</td></tr>{{end}}
+  </table>
+  <form method="post" action="/account/tokens" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="name" placeholder="token name, e.g. laptop extension" required>
+    <button class="primary">Create token</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Change password</h2>
+  <form method="post" action="/account/password">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Current password <input name="current" type="password" required autocomplete="current-password"></label>
+    <label>New password <input name="password" type="password" minlength="5" required autocomplete="new-password"></label>
+    <label>Repeat <input name="password2" type="password" minlength="5" required autocomplete="new-password"></label>
+    <button class="primary">Change</button>
+  </form>
+</section>
+</div>
+{{end}}

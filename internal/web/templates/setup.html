@@ -1,0 +1,13 @@
+{{define "content"}}
+<section class="narrow card">
+  <h1>{{icon "snowflake"}} Create the administrator</h1>
+  <p class="muted">No users exist yet. The first account gets the admin role.</p>
+  {{with .Data.Error}}<div class="flash err">{{.}}</div>{{end}}
+  <form method="post" action="/setup">
+    <label>Login <input name="login" autocomplete="username" required autofocus></label>
+    <label>Password (min. 5 characters) <input name="password" type="password" autocomplete="new-password" minlength="5" required></label>
+    <label>Repeat password <input name="password2" type="password" autocomplete="new-password" minlength="5" required></label>
+    <button class="primary wide">Create</button>
+  </form>
+</section>
+{{end}}

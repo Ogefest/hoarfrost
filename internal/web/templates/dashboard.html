@@ -1,0 +1,57 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Dashboard</h1>
+<div class="tiles">
+  <div class="tile"><span class="label">Archive size</span><span class="value">{{bytes $d.Stats.Bytes}}</span></div>
+  <div class="tile"><span class="label">Pages</span><span class="value">{{$d.Stats.Pages}}</span></div>
+  <div class="tile"><span class="label">Saved by deduplication</span><span class="value">{{bytes $d.Stats.DedupSaved}}</span><span class="sub">{{$d.Stats.Revisits}} revisits · {{pct $d.Ratio}}</span></div>
+  <div class="tile"><span class="label">Queue</span><span class="value">{{index $d.Queue "queued"}}</span><span class="sub">{{index $d.Queue "leased"}} running · {{index $d.Queue "failed"}} failed</span></div>
+  <div class="tile"><span class="label">Last sealed week</span>
+    {{with $d.Stats.LastEpoch.Epoch}}<span class="value">{{.}}</span><span class="sub state-{{$d.Stats.LastEpoch.State}}">{{$d.Stats.LastEpoch.State}}</span>{{else}}<span class="value">—</span>{{end}}
+  </div>
+</div>
+
+<div class="grid2">
+<section class="card">
+  <h2>Captures per day (30 days)</h2>
+  {{if $d.Stats.PerDay}}
+  <div class="bars">
+    {{range $d.Stats.PerDay}}<div class="bar" title="{{.Day}}: {{.Pages}}"><span style="height: {{bar .Pages $d.MaxDay}}%"></span></div>{{end}}
+  </div>
+  {{else}}<p class="muted">No captures yet.</p>{{end}}
+</section>
+<section class="card">
+  <h2>Size per week</h2>
+  <table class="compact">
+  {{range $d.Stats.EpochSizes}}
+    <tr><td>{{.Epoch}}</td><td>{{.Storage}}</td><td><span class="state state-{{.State}}">{{.State}}</span></td><td class="num">{{.Pages}} pages</td><td class="num">{{bytes .Bytes}}</td>
+    <td class="meter"><span style="width: {{bar .Bytes $d.MaxEpoch}}%"></span></td></tr>
+  {{else}}<tr><td class="muted">Nothing stored yet.</td></tr>{{end}}
+  </table>
+</section>
+</div>
+
+<div class="grid2">
+<section class="card">
+  <h2>Sources</h2>
+  <table class="compact">
+    <tr><th>Source</th><th class="num">Pages</th><th class="num">Fallback</th><th class="num">Short text</th><th>Last</th></tr>
+    {{range $d.Stats.Sources}}
+    <tr><td>{{.Source}}</td><td class="num">{{.Pages}}</td><td class="num {{if gt .FallbackRatio 0.3}}warn{{end}}">{{pct .FallbackRatio}}</td><td class="num">{{.Short}}</td><td>{{ago .Last}}</td></tr>
+    {{end}}
+  </table>
+  <p class="muted">A high fallback share suggests switching the source to the chrome engine.</p>
+</section>
+<section class="card">
+  <h2>Workers</h2>
+  <table class="compact">
+    {{range $d.Workers}}<tr><td>{{.Name}}</td><td>{{ago .LastSeen}}</td><td class="num">{{.Leases}} leases</td></tr>{{else}}<tr><td class="muted">No worker seen in the last hour.</td></tr>{{end}}
+  </table>
+  {{if $d.Active}}<h3>Capturing now</h3><ul class="plain">{{range $d.Active}}<li class="url">{{.}}</li>{{end}}</ul>{{end}}
+  {{if $d.Failed}}<h3>Recent failures</h3>
+  <ul class="plain">{{range $d.Failed}}<li><span class="url">{{.URL}}</span><br><span class="muted">{{.LastError}}</span></li>{{end}}</ul>
+  <a href="/queue?state=failed">All failures →</a>{{end}}
+  {{range $ep, $err := $d.SealErrors}}<div class="flash err">Sealing {{$ep}} failed: {{$err}}</div>{{end}}
+</section>
+</div>
+{{end}}

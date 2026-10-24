@@ -1,0 +1,25 @@
+# Build output
+/hoarfrost
+/hoarfrost-testsite
+/dist/
+*.test
+*.out
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+
+# Local runs: data directory, archive written by docker compose
+/data/
+/archive/
+*.wacz
+*.warc.gz
+!/internal/**/testdata/**
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

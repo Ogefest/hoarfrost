@@ -1,0 +1,47 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>Queue</h1>
+<nav class="tabs">
+  {{range $s := (list "queued" "leased" "failed" "done")}}
+  <a href="/queue?state={{$s}}" {{if eq $s $d.State}}class="active"{{end}}>{{$s}} ({{index $d.Counts $s}})</a>
+  {{end}}
+</nav>
+<div class="grid2">
+<section class="card">
+  <h2>Add URLs now</h2>
+  <form method="post" action="/queue/add">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <textarea name="urls" rows="3" placeholder="one URL per line" required></textarea>
+    <div class="row">
+      <input name="source" placeholder="source (default: api)">
+      <select name="engine"><option value="">default engine</option><option>static</option><option>chrome</option><option>http</option></select>
+      <select name="storage" title="where the capture is stored"><option value="">source's storage</option>{{range .Data.Storages}}<option>{{.}}</option>{{end}}</select>
+      <button class="primary">{{icon "plus"}}Queue</button>
+    </div>
+  </form>
+</section>
+{{if eq $d.State "failed"}}
+<section class="card">
+  <h2>Failed jobs</h2>
+  <form method="post" action="/queue/retry-failed"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>{{icon "refresh-cw"}}Retry all failed</button></form>
+</section>
+{{end}}
+</div>
+<table class="results">
+  <tr><th>#</th><th>URL</th><th>Storage</th><th>Source</th><th>Engine</th><th>Tries</th><th>Week</th><th>Created</th><th></th></tr>
+  {{range $d.Jobs}}
+  <tr>
+    <td>{{.ID}}</td>
+    <td><span class="url">{{.URL}}</span>{{with .LastError}}<br><span class="warn small">{{.}}</span>{{end}}</td>
+    <td>{{.Storage}}</td><td>{{.Source}}</td><td>{{.Engine}}{{if .Fallback}} (fallback){{end}}</td><td>{{.Attempts}}</td>
+    <td>{{.Epoch}}</td><td>{{datetime .Created}}</td>
+    <td>{{if eq .State "failed"}}<form method="post" action="/queue/{{.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Retry</button></form>{{end}}
+        {{if eq .State "leased"}}<span class="muted">{{.Worker}} until {{datetime .LeaseUntil}}</span>{{end}}</td>
+  </tr>
+  {{else}}<tr><td colspan="9" class="muted">Nothing here.</td></tr>{{end}}
+</table>
+<nav class="pager">
+  {{if gt $d.Page 1}}<a href="/queue?state={{$d.State}}&page={{sub $d.Page 1}}">← Previous</a>{{end}}
+  {{if $d.More}}<a href="/queue?state={{$d.State}}&page={{add $d.Page 1}}">Next →</a>{{end}}
+</nav>
+{{end}}

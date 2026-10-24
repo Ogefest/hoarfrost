@@ -1,0 +1,41 @@
+{{define "content"}}
+{{$d := .Data}}{{$f := $d.Form}}
+<a class="back" href="/sources">← Sources</a>
+<h1>{{if $d.New}}New source{{else}}Source {{$f.Name}}{{end}}</h1>
+<form method="post" action="{{if $d.New}}/sources/new{{else}}/sources/{{$f.Name}}/edit{{end}}" class="card">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="form-grid">
+    <label>Name <span class="muted">lowercase letters, digits, - and _; used in the archive and cannot be changed</span>
+      <input name="name" value="{{$f.Name}}" {{if $d.New}}required pattern="[a-z0-9][a-z0-9_\-]{0,62}" autofocus{{else}}readonly{{end}}>
+    </label>
+    <label class="inline"><input type="checkbox" name="enabled" value="1" {{if $f.Enabled}}checked{{end}}> polled automatically</label>
+  </div>
+  <div class="form-grid">
+    <label>RSS / Atom feeds <span class="muted">one URL per line</span>
+      <textarea name="feeds" rows="3" spellcheck="false" placeholder="https://example.org/rss.xml">{{$f.Feeds}}</textarea>
+    </label>
+    <label>Sitemaps <span class="muted">sitemap indexes are followed</span>
+      <textarea name="sitemaps" rows="3" spellcheck="false" placeholder="https://example.org/sitemap-news.xml">{{$f.Sitemaps}}</textarea>
+    </label>
+    <label>Fixed URLs <span class="muted">captured once per storage</span>
+      <textarea name="urls" rows="3" spellcheck="false">{{$f.URLs}}</textarea>
+    </label>
+  </div>
+  <h2>Capture settings</h2>
+  <p class="muted small">Empty fields use the <a href="/sources/settings">defaults</a>.</p>
+  {{template "settingsFields" (fields $f.Settings $d.Choices false)}}
+  <div class="row">
+    <button class="primary">Save</button>
+    <button type="button" hx-post="/sources/test" hx-include="closest form" hx-target="#test-result">Test without saving</button>
+    <a class="button" href="/sources">Cancel</a>
+    <span id="test-result" class="small"></span>
+  </div>
+</form>
+{{if not $d.New}}
+<form method="post" action="/sources/{{$f.Name}}/delete" class="row">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label class="inline"><input type="checkbox" required> delete this source (archived pages stay)</label>
+  <button class="danger">Delete source</button>
+</form>
+{{end}}
+{{end}}

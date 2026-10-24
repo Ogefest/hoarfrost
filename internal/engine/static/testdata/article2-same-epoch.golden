@@ -1,0 +1,19 @@
+metadata urn:pageinfo:http://site/news/article2.html application/json; profile="https://github.com/ogefest/hoarfrost/capture-metadata"
+request  http://site/css/fonts.css GET /css/fonts.css HTTP/1.1
+request  http://site/css/main.css GET /css/main.css HTTP/1.1
+request  http://site/css/print.css GET /css/print.css HTTP/1.1
+request  http://site/fonts/a.woff GET /fonts/a.woff HTTP/1.1
+request  http://site/fonts/a.woff2 GET /fonts/a.woff2 HTTP/1.1
+request  http://site/img/bg.png GET /img/bg.png HTTP/1.1
+request  http://site/img/logo.png GET /img/logo.png HTTP/1.1
+request  http://site/img/logo2x.png GET /img/logo2x.png HTTP/1.1
+request  http://site/news/article2.html GET /news/article2.html HTTP/1.1
+response http://site/news/article2.html 200 text/html; charset=utf-8 sha1:FPB2LU5INMXBRN5ZVA7VBWNU33IYDMCU
+revisit  http://site/css/fonts.css 200 text/css sha1:VZ6DLX2Z664553RKTDARRBDKA6DSTPS2 -> http://site/css/fonts.css
+revisit  http://site/css/main.css 200 text/css sha1:W3QGBYLS36KQTCKDYEROO2I5GKFFXQJG -> http://site/css/main.css
+revisit  http://site/css/print.css 200 text/css sha1:OKUWDZB3525LL6N5TU655RHDI3JEQDKP -> http://site/css/print.css
+revisit  http://site/fonts/a.woff 200 font/woff2 sha1:T5X3RTGBQBTFC7IJAOQKK3FAV4KGEYUL -> http://site/fonts/a.woff
+revisit  http://site/fonts/a.woff2 200 font/woff2 sha1:QLMOE7EVYCZS6ITKY57HKOWQE6TN72O4 -> http://site/fonts/a.woff2
+revisit  http://site/img/bg.png 200 image/png sha1:BQ6HUKMRPEOUHVH75OBYQAUO733OC4P7 -> http://site/img/bg.png
+revisit  http://site/img/logo.png 200 image/png sha1:6ME2ITPS2SKPZESWYXUXBLIMC777ZULR -> http://site/img/logo.png
+revisit  http://site/img/logo2x.png 200 image/png sha1:MVDSFWS5IWA5AAXMZWDXIF25V6N7BVPR -> http://site/img/logo2x.png

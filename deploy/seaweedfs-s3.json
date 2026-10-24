@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "hoarfrost",
+      "credentials": [{ "accessKey": "hoarfrost", "secretKey": "hoarfrost-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

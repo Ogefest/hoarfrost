@@ -1,0 +1,56 @@
+{{define "content"}}
+{{$d := .Data}}
+<h1>System</h1>
+<nav class="tabs"><a href="/system">Overview</a><a href="/system/keys" class="active">API keys</a></nav>
+{{with $d.NewKey}}
+<div class="flash ok">
+  <p><b>API key for {{$d.Name}}</b>. Copy it now, it is shown only once.</p>
+  <code class="select">{{.}}</code>
+</div>
+{{end}}
+<div class="grid2">
+<section class="card">
+  <h2>New API key</h2>
+  <p class="muted">Keys give applications <b>read-only</b> access to the archive: search, page metadata and text,
+  captured files, HTML exports, WARC records and weekly WACZ packages. They cannot change anything and do not open the web interface.</p>
+  <form method="post" action="/system/keys">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-grid">
+      <label>Application <span class="muted">who uses the key</span>
+        <input name="name" placeholder="e.g. newsroom-dashboard" required maxlength="100">
+      </label>
+      <label>Expires <span class="muted">empty: never</span>
+        <input type="date" name="expires">
+      </label>
+    </div>
+    <button class="primary">{{icon "plus"}}Create key</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Using a key</h2>
+  <p class="muted">Send it in the <code>Authorization</code> header:</p>
+  <p><code>curl -H "Authorization: Bearer hfr_…" /api/pages?after=0</code></p>
+  <ul class="plain small">
+    <li><code>GET /api/pages?after=</code> new captures since a cursor</li>
+    <li><code>GET /api/search?q=</code> full-text search with filters</li>
+    <li><code>GET /api/facets</code> sources, storages and kinds for filters</li>
+    <li><code>GET /api/pages/{id}</code> metadata and extracted text</li>
+    <li><code>GET /api/pages/{id}/content</code> the captured file</li>
+  </ul>
+  <p class="muted small">Specification for client generators: <a href="/api/openapi.yaml">openapi.yaml</a>. Guide: <code>docs/api.md</code>.</p>
+</section>
+</div>
+<table class="results">
+  <tr><th>Application</th><th>Created</th><th>Created by</th><th>Last used</th><th>Expires</th><th></th></tr>
+  {{range $d.Keys}}
+  <tr {{if .Expired $d.Now}}class="disabled"{{end}}>
+    <td><b>{{.Name}}</b></td>
+    <td>{{datetime .Created}}</td>
+    <td>{{.CreatedBy}}</td>
+    <td>{{if .LastUsed.IsZero}}<span class="muted">never</span>{{else}}<span title="{{datetime .LastUsed}}">{{ago .LastUsed}}</span>{{end}}</td>
+    <td>{{if .Expires.IsZero}}<span class="muted">never</span>{{else if .Expired $d.Now}}<span class="state state-failed">expired</span>{{else}}{{datetime .Expires}}{{end}}</td>
+    <td class="nowrap"><form method="post" action="/system/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger">{{icon "trash-2"}}Revoke</button></form></td>
+  </tr>
+  {{else}}<tr><td colspan="6" class="muted">No API keys yet.</td></tr>{{end}}
+</table>
+{{end}}
