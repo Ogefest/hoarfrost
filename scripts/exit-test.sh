@@ -21,7 +21,7 @@ if [[ -d "$src" ]]; then
   cp "$src/$pick" "$work/week.wacz"
   [[ -f "$src/$pick.sha256" ]] && cp "$src/$pick.sha256" "$work/week.wacz.sha256"
 else
-  pick=$(rclone lsf -R --include '*.wacz' "$src/weekly" | shuf -n1)
+  pick=$(rclone lsf -R --files-only --include '*.wacz' "$src/weekly" | shuf -n1)
   rclone copyto "$src/weekly/$pick" "$work/week.wacz"
 fi
 echo "package: $pick"
