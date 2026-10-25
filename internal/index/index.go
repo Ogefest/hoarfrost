@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
@@ -840,15 +841,35 @@ func (d *DB) Closest(ctx context.Context, uri string, t time.Time) (Record, erro
 // Captures of exactly uri win over equivalent URLs (SURT ignores "www." and
 // the scheme), so a redirect from example.com/a to www.example.com/a resolves
 // to the target rather than back to the redirect.
+//
+// Shared assets (a site's CSS, icons) have a capture or revisit for every
+// page, so instead of sorting all of them by distance each preference group
+// is searched in order with two short walks of the (surt_hash, date) index:
+// the last capture at or before t and the first one after it. The query is
+// planned for its values every time: a cached generic plan scans all
+// captures of the URL again.
 func (d *DB) ClosestIn(ctx context.Context, storage, uri string, t time.Time) (Record, error) {
 	if t.IsZero() {
 		t = time.Now()
 	}
 	surt := cdxj.SURT(uri)
-	return scanRecord(d.db.QueryRowContext(ctx, `SELECT `+recordCols+` FROM records
-		WHERE surt_hash = $1 AND surt = $2 AND type IN ('response','revisit','resource')
-		ORDER BY storage <> $3, uri <> $4, abs(extract(epoch FROM date - $5)), date DESC LIMIT 1`,
-		surtHash(surt), surt, storage, uri, utc(t)))
+	groups := []string{"storage = $3 AND uri = $4", "storage = $3 AND uri <> $4", "storage <> $3 AND uri = $4", "storage <> $3 AND uri <> $4"}
+	if storage == "" {
+		groups = groups[2:]
+	}
+	for _, cond := range groups {
+		where := `WHERE surt_hash = $1 AND surt = $2 AND type IN ('response','revisit','resource') AND ` + cond
+		r, err := scanRecord(d.db.QueryRowContext(ctx, `SELECT `+recordCols+` FROM (
+			(SELECT `+recordCols+` FROM records `+where+` AND date <= $5 ORDER BY date DESC LIMIT 1)
+			UNION ALL
+			(SELECT `+recordCols+` FROM records `+where+` AND date > $5 ORDER BY date LIMIT 1)
+		) c ORDER BY abs(extract(epoch FROM date - $5)), date DESC LIMIT 1`,
+			pgx.QueryExecModeExec, surtHash(surt), surt, storage, uri, utc(t)))
+		if !errors.Is(err, ErrNotFound) {
+			return r, err
+		}
+	}
+	return Record{}, ErrNotFound
 }
 
 // Payload follows a revisit to the record holding the content.
