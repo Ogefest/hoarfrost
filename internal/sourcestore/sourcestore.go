@@ -173,3 +173,37 @@ func (s *Store) Statuses(ctx context.Context) (map[string]Status, error) {
 	}
 	return out, rows.Err()
 }
+
+// HostAlias is the origin a site lives on, as found by probing a URL of
+// another origin.
+type HostAlias struct {
+	Target  string // equal to the origin when it does not redirect
+	Checked time.Time
+}
+
+// HostAliases returns the known origins of discovered URLs.
+func (s *Store) HostAliases(ctx context.Context) (map[string]HostAlias, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT origin, target, checked FROM host_aliases`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]HostAlias{}
+	for rows.Next() {
+		var origin string
+		var a HostAlias
+		if err := rows.Scan(&origin, &a.Target, &a.Checked); err != nil {
+			return nil, err
+		}
+		a.Checked = a.Checked.UTC()
+		out[origin] = a
+	}
+	return out, rows.Err()
+}
+
+// SetHostAlias records the result of probing an origin.
+func (s *Store) SetHostAlias(ctx context.Context, origin string, a HostAlias) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO host_aliases(origin, target, checked) VALUES ($1, $2, $3)
+		ON CONFLICT (origin) DO UPDATE SET target = excluded.target, checked = excluded.checked`, origin, a.Target, a.Checked.UTC())
+	return err
+}

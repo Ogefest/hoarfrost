@@ -105,6 +105,14 @@ CREATE TABLE api_keys (
 -- Time of the last poll without errors, for alerting on failing sources.
 ALTER TABLE sources ADD COLUMN last_success TIMESTAMPTZ;
 UPDATE sources SET last_success = last_poll WHERE last_error IS NULL;
+`, `
+-- Origins of discovered URLs and the origin their site lives on, learned
+-- from a permanent redirect of the whole host (example.com -> www.example.com).
+CREATE TABLE host_aliases (
+  origin  TEXT PRIMARY KEY,
+  target  TEXT NOT NULL,
+  checked TIMESTAMPTZ NOT NULL
+);
 `}
 
 // Open connects to the database at url, uses schema (Schema in production)

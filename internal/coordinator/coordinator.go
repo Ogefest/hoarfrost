@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -393,6 +395,81 @@ func (c *Coordinator) AddURL(ctx context.Context, r URLRequest) (int64, error) {
 	return ids[0], nil
 }
 
+// Limits of probing origins of discovered URLs for host aliases.
+const (
+	aliasRecheck      = 30 * 24 * time.Hour
+	maxAliasProbes    = 20 // per poll; the rest waits for the next poll
+	aliasProbeTimeout = 15 * time.Second
+)
+
+// canonicalURLs rewrites discovered URLs to the origin their site lives on
+// and drops fragments and duplicates, so a site listing one article under
+// example.com, m.example.com and www.example.com queues it once. An origin
+// is probed with one of its URLs when it is first seen and again after
+// aliasRecheck.
+func (c *Coordinator) canonicalURLs(ctx context.Context, urls []string) []string {
+	aliases, err := c.opts.Sources.HostAliases(ctx)
+	if err != nil {
+		c.log.Warn("reading host aliases", "err", err)
+		aliases = map[string]sourcestore.HostAlias{}
+	}
+	probes := 0
+	for _, u := range urls {
+		o := sources.Origin(u)
+		if a, ok := aliases[o]; o == "" || (ok && c.Now().Sub(a.Checked) < aliasRecheck) || probes >= maxAliasProbes {
+			continue
+		}
+		probes++
+		pctx, cancel := context.WithTimeout(ctx, aliasProbeTimeout)
+		target, err := c.fetcher.ProbeOrigin(pctx, u)
+		cancel()
+		if err != nil {
+			// Not stored: probed again on the next poll.
+			c.log.Warn("probing host for aliases", "url", u, "err", err)
+			aliases[o] = sourcestore.HostAlias{Target: o, Checked: c.Now()}
+			continue
+		}
+		a := sourcestore.HostAlias{Target: target, Checked: c.Now()}
+		aliases[o] = a
+		if target != o {
+			c.log.Info("host alias found", "origin", o, "target", target)
+		}
+		if err := c.opts.Sources.SetHostAlias(ctx, o, a); err != nil {
+			c.log.Warn("storing host alias", "origin", o, "err", err)
+		}
+	}
+	out := make([]string, 0, len(urls))
+	seen := map[string]bool{}
+	for _, u := range urls {
+		u, _, _ = strings.Cut(u, "#")
+		if target := resolveAlias(aliases, sources.Origin(u)); target != sources.Origin(u) {
+			if p, err := url.Parse(u); err == nil {
+				t, _ := url.Parse(target)
+				p.Scheme, p.Host = t.Scheme, t.Host
+				u = p.String()
+			}
+		}
+		if !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// resolveAlias follows host aliases from origin (a few hops: http://example.com
+// may point to https://example.com, which points to https://www.example.com).
+func resolveAlias(aliases map[string]sourcestore.HostAlias, origin string) string {
+	for range 4 {
+		a, ok := aliases[origin]
+		if !ok || a.Target == origin || a.Target == "" {
+			break
+		}
+		origin = a.Target
+	}
+	return origin
+}
+
 // PollSources discovers new URLs of sources whose interval elapsed (all
 // enabled sources when force is set) and queues those not seen before.
 func (c *Coordinator) PollSources(ctx context.Context, force bool) error {
@@ -441,6 +518,7 @@ func (c *Coordinator) poll(ctx context.Context, src *config.Sources, s config.So
 		for i, it := range items {
 			urls[i] = it.URL
 		}
+		urls = c.canonicalURLs(ctx, urls)
 		fresh, err := c.idx.MarkSeen(ctx, res.Storage, urls, c.Now())
 		if err != nil {
 			return err

@@ -90,3 +90,34 @@ func FuzzSitemap(f *testing.F) {
 		NewFetcher("").Sitemap(context.Background(), srv.URL)
 	})
 }
+
+func TestProbeOrigin(t *testing.T) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer site.Close()
+	alias := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/temporary":
+			http.Redirect(w, r, site.URL+r.URL.RequestURI(), http.StatusFound)
+		case "/moved":
+			http.Redirect(w, r, site.URL+"/", http.StatusMovedPermanently)
+		default:
+			http.Redirect(w, r, site.URL+r.URL.RequestURI(), http.StatusMovedPermanently)
+		}
+	}))
+	defer alias.Close()
+	f := NewFetcher("test")
+	ctx := context.Background()
+	for _, c := range []struct{ url, want string }{
+		{alias.URL + "/news/a.html?id=1", Origin(site.URL)}, // the whole host redirects
+		{alias.URL + "/temporary", Origin(alias.URL)},       // not permanent
+		{alias.URL + "/moved", Origin(alias.URL)},           // another page, not another host
+		{site.URL + "/news/a.html", Origin(site.URL)},
+	} {
+		if got, err := f.ProbeOrigin(ctx, c.url); err != nil || got != c.want {
+			t.Errorf("%s: %q %v, want %q", c.url, got, err, c.want)
+		}
+	}
+	if Origin("HTTPS://WWW.Example.com/A") != "https://www.example.com" || Origin("bad") != "" {
+		t.Fatal("origin")
+	}
+}

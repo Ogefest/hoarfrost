@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -213,4 +214,50 @@ func filter(items []Item, maxAge time.Duration, now time.Time) []Item {
 		out = append(out, it)
 	}
 	return out
+}
+
+// Origin returns the scheme and host of a URL ("https://www.example.com"),
+// lowercased, or "" for an invalid URL.
+func Origin(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
+// ProbeOrigin requests rawURL without following redirects and returns the
+// origin its site lives on: the origin of a permanent redirect (301, 308)
+// to the same path and query on another scheme or host, which makes the
+// whole host an alias (example.com and m.example.com redirecting to
+// www.example.com), and the URL's own origin otherwise.
+func (f *Fetcher) ProbeOrigin(ctx context.Context, rawURL string) (string, error) {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	if f.UserAgent != "" {
+		req.Header.Set("User-Agent", f.UserAgent)
+	}
+	client := *f.Client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	own := Origin(rawURL)
+	if resp.StatusCode != http.StatusMovedPermanently && resp.StatusCode != http.StatusPermanentRedirect {
+		return own, nil
+	}
+	// An invalid Location is not an alias either.
+	if loc, err := resp.Location(); err == nil && (loc.Scheme == "http" || loc.Scheme == "https") &&
+		loc.EscapedPath() == u.EscapedPath() && loc.RawQuery == u.RawQuery {
+		return Origin(loc.String()), nil
+	}
+	return own, nil
 }

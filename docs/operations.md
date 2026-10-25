@@ -239,8 +239,9 @@ week manually (e.g. in tests).
 All state outside the archive lives in one PostgreSQL database
 (`HOARFROST_DATABASE=postgres://user:password@host:5432/hoarfrost`):
 
-- schema `app` – users, sessions, API tokens, the job queue, sources and
-  settings (migrated in place by new versions);
+- schema `app` – users, sessions, API tokens, the job queue, sources,
+  settings and host aliases of discovered URLs (migrated in place by new
+  versions);
 - schema `archive_index` – record locations, pages, full-text search and
   statistics; a read-optimized copy of what is in storage, dropped and
   rebuilt from storage when a new version changes its layout.

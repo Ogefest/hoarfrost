@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -706,5 +707,57 @@ func TestAlertingMetrics(t *testing.T) {
 	}
 	if st := e.coord.SourceStatuses(ctx)["ok"]; st.LastSuccess.IsZero() || !st.LastSuccess.Equal(st.LastPoll) {
 		t.Fatalf("status %+v", st)
+	}
+}
+
+// TestHostAliases: a site listing articles under a host that redirects to
+// its main host queues each article once, under the main host.
+func TestHostAliases(t *testing.T) {
+	var probes int
+	var mu sync.Mutex
+	var target string
+	alias := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		probes++
+		mu.Unlock()
+		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusMovedPermanently)
+	}))
+	defer alias.Close()
+	e := newEnv(t, "sources: []\n", time.Minute)
+	target = e.site.URL
+	ctx := context.Background()
+	src := config.Source{Name: "lustro", URLs: []string{
+		alias.URL + "/news/article2.html#komentarze", e.site.URL + "/news/article.html", alias.URL + "/news/article.html",
+	}}
+	if err := e.coord.SaveSource(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.coord.PollSource(ctx, "lustro"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := e.q.List(ctx, "queued", 10, 0)
+	var urls []string
+	for _, j := range jobs {
+		urls = append(urls, j.URL)
+	}
+	sort.Strings(urls)
+	if want := []string{e.site.URL + "/news/article.html", e.site.URL + "/news/article2.html"}; fmt.Sprint(urls) != fmt.Sprint(want) {
+		t.Fatalf("queued %v, want %v", urls, want)
+	}
+	if st := e.coord.SourceStatuses(ctx)["lustro"]; st.Found != 3 || st.New != 2 {
+		t.Fatalf("status %+v", st)
+	}
+
+	// The alias is stored: a later poll neither probes again nor queues the
+	// alias URLs of articles already seen.
+	if err := e.coord.PollSource(ctx, "lustro"); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.coord.SourceStatuses(ctx)["lustro"]; st.New != 0 || probes != 1 {
+		t.Fatalf("second poll %+v, %d probes", st, probes)
+	}
+	aliases, _ := sourcestore.New(e.db).HostAliases(ctx)
+	if got := aliases[strings.ToLower(alias.URL)].Target; got != strings.ToLower(e.site.URL) {
+		t.Fatalf("aliases %+v", aliases)
 	}
 }

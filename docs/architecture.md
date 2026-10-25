@@ -107,8 +107,17 @@ and storages it supports; the coordinator leases jobs in one transaction
 
 | Level | Where | What |
 |---|---|---|
-| URL | coordinator, when a source is polled | A URL from a feed or sitemap is queued only if it was not seen before in that storage and is not already waiting. URLs added through the API or UI skip the filter. |
+| URL | coordinator, when a source is polled | A URL from a feed or sitemap is queued only if it was not seen before in that storage and is not already waiting. Before the check, fragments are dropped and URLs on a host alias are rewritten to the host the site lives on (see below). URLs added through the API or UI skip the filter. |
 | Content | recorder, for every response | The payload digest is looked up in the current epoch; a hit is written as a `revisit` record, a miss as a full `response`. |
+
+Sites often list one article under several hosts (`example.com`,
+`m.example.com`, `www.example.com`), and a sitemap may switch between them
+from one poll to the next. When the coordinator meets a new origin (scheme
+and host) in a feed or sitemap, it requests one of its URLs without
+following redirects. A permanent redirect (301 or 308) to the same path and
+query on another origin makes the origin an alias of that one; the result is
+kept in `app.host_aliases` and checked again after 30 days. At most 20
+origins are probed per poll.
 
 ```
 for every response:
