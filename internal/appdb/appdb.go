@@ -113,6 +113,9 @@ CREATE TABLE host_aliases (
   target  TEXT NOT NULL,
   checked TIMESTAMPTZ NOT NULL
 );
+`, `
+-- Queued jobs grouped for taking turns between sources (see queue.Lease).
+CREATE INDEX jobs_fair ON jobs(source, domain, storage, engine, priority, created, id) WHERE state = 'queued';
 `}
 
 // Open connects to the database at url, uses schema (Schema in production)

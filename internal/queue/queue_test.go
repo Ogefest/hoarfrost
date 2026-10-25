@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -255,5 +256,52 @@ func TestLeaseByStorage(t *testing.T) {
 	jobs, _ = q.Lease(ctx, r)
 	if len(jobs) != 1 || jobs[0].Storage != "prasa" {
 		t.Fatalf("%+v", jobs)
+	}
+}
+
+// TestSourcesTakeTurns: a long backlog of one source does not hold up a
+// source added later, and priority still comes first.
+func TestSourcesTakeTurns(t *testing.T) {
+	q, c := newQueue(t)
+	ctx := context.Background()
+	for i := range 50 {
+		q.Add(ctx, NewJob{URL: fmt.Sprintf("https://d%d.duzy.pl/%d", i%5, i), Source: "sitemap", Engine: "static"})
+	}
+	c.add(time.Minute)
+	q.Add(ctx, NewJob{URL: "https://rss.pl/1", Source: "rss", Engine: "static"},
+		NewJob{URL: "https://rss.pl/2", Source: "rss", Engine: "static"})
+	c.add(time.Minute)
+	q.Add(ctx, NewJob{URL: "https://inny.pl/teraz", Source: "api", Engine: "static", Priority: 10})
+	r := req
+	r.Max = 1
+	var got []string
+	for range 6 {
+		c.add(time.Second)
+		jobs, err := q.Lease(ctx, r)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("lease %v %v", jobs, err)
+		}
+		got = append(got, jobs[0].Source)
+	}
+	if want := "[api sitemap rss sitemap rss sitemap]"; fmt.Sprint(got) != want {
+		t.Fatalf("order %v, want %s", got, want)
+	}
+
+	// Within a source the oldest job goes first; full domains are skipped.
+	jobs, _ := q.List(ctx, Leased, 10, 0)
+	var sitemap []string
+	for _, j := range jobs {
+		if j.Source == "sitemap" {
+			sitemap = append(sitemap, j.URL)
+		}
+	}
+	slices.Sort(sitemap)
+	if want := "[https://d0.duzy.pl/0 https://d1.duzy.pl/1 https://d2.duzy.pl/2]"; fmt.Sprint(sitemap) != want {
+		t.Fatalf("sitemap jobs %v", sitemap)
+	}
+	r.MaxPerDomain, r.Max = 1, 10
+	more, _ := q.Lease(ctx, r)
+	if len(more) != 2 || more[0].Domain == more[1].Domain {
+		t.Fatalf("per-domain limit: %+v", more)
 	}
 }

@@ -92,8 +92,13 @@ and storages it supports; the coordinator leases jobs in one transaction
 
 - A lease lasts `HOARFROST_LEASE` (10 minutes by default). An expired lease
   returns the job to the queue, so a crashed worker loses nothing.
+- Order: jobs of crashed workers first, then the lowest priority number.
+  Within a priority, sources take turns: the source with the fewest running
+  jobs (then the one served least recently) gets its oldest job. A sitemap
+  bringing a hundred thousand old articles does not delay today's articles
+  from a feed; it is worked off with the slots the other sources leave.
 - Politeness: at most *N* simultaneous leases per domain (`max_per_domain`,
-  default 2). The limit is part of the lease query, so it holds across all
+  default 2). The limit is part of the lease, so it holds across all
   workers.
 - Failed jobs are retried with a backoff, up to three attempts.
 - If two workers complete the same job (a late report after the lease
