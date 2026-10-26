@@ -188,23 +188,25 @@ func (d *DB) PageByMetadata(ctx context.Context, id string) (Page, error) {
 	return scanPage(d.db.QueryRowContext(ctx, `SELECT `+pageCols+` FROM pages p WHERE metadata_id = $1`, id))
 }
 
-// EpochPages lists the pages of an epoch ordered by URL and capture time.
-func (d *DB) EpochPages(ctx context.Context, storage string, ep epoch.ID) ([]Page, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT `+pageCols+` FROM pages p WHERE storage = $1 AND epoch = $2 ORDER BY uri, captured, metadata_id`,
-		StorageOr(storage), string(ep))
+// EachEpochPage calls fn with the pages of an epoch ordered bytewise by URL,
+// then by capture time, reading them as a stream.
+func (d *DB) EachEpochPage(ctx context.Context, storage string, ep epoch.ID, fn func(Page) error) error {
+	rows, err := d.db.QueryContext(ctx, `SELECT `+pageCols+` FROM pages p WHERE storage = $1 AND epoch = $2
+		ORDER BY uri COLLATE "C", captured, metadata_id`, StorageOr(storage), string(ep))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var out []Page
 	for rows.Next() {
 		p, err := scanPage(rows)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, p)
+		if err := fn(p); err != nil {
+			return err
+		}
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // PageCaptures lists captures of the same URL, newest first.

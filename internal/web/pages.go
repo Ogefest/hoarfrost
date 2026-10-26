@@ -45,7 +45,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	d := dashboardData{Stats: st, Workers: s.Coord.Workers(), SealErrors: s.Coord.SealErrors()}
+	d := dashboardData{Stats: st, Workers: s.Coord.Workers(), SealErrors: s.Coord.SealErrors(ctx)}
 	if len(d.Stats.EpochSizes) > 12 {
 		d.Stats.EpochSizes = d.Stats.EpochSizes[:12]
 	}

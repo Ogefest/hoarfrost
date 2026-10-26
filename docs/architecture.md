@@ -165,17 +165,62 @@ week, which is negligible compared to thousands of captures.
 ### Sealing
 
 1. List `incoming/<year>/W<week>/` and compare it with the index.
-2. Build the WACZ package (ZIP with every entry stored, ZIP64 when needed):
+2. Stream the WACZ package (ZIP with every entry stored, ZIP64 when needed)
+   straight to `weekly/` (S3 multipart upload, or a temporary file renamed
+   into place on a filesystem): it becomes visible only when complete.
+   Every capture file is read once; its bytes are copied into the package
+   and scanned for the index on the way. The package holds:
    - `archive/*.warc.gz` – the capture files, optionally concatenated per
      source (concatenated gzip members are a valid `.warc.gz`);
    - `indexes/index.cdxj` – sorted; large weeks use a ZipNum block index;
    - `pages/pages.jsonl` – URL, title, time, source and extracted **text**;
    - `datapackage.json` (SHA-256 of every entry) and `datapackage-digest.json`.
-3. Compute the **absolute offset** of every record inside the WACZ file and
-   update the index.
-4. Upload the package to `weekly/`, write the `.sha256` file and the Parquet
-   page table, and verify after upload.
-5. Run the verification and write the result to `catalog/<year>/W<week>.json`.
+
+   Index and page lines are sorted in bounded memory through temporary
+   files in the spool directory (a few percent of the week, compressed).
+   Neither local disk nor memory grows with the size of the week: a
+   terabyte week needs the same machine as a gigabyte one.
+3. Write the `.sha256` file and the **captures list**
+   (`weekly/<year>/W<week>.captures.jsonl`): every capture file with its
+   absolute offset in the package and the SHA-256 of its bytes.
+4. Move the index to the package: the records and pages of a capture file
+   keep their offsets, shifted by where the file starts in the package.
+5. Write the Parquet page table and `catalog/<year>/W<week>.json`, then
+   verify the stored package (below) and record the result in the catalog.
+
+Every step after the upload can be repeated: a seal interrupted after the
+package and its captures list were stored resumes there; one interrupted
+earlier removes the partial package and starts over. `incoming/` files are
+removed only after verification, so nothing is lost by starting over.
+
+### Verification
+
+Verification reads the stored package once from start to end and proves
+that nothing was lost between `incoming/` and the package:
+
+- the package matches its SHA-256 (catalog and `.sha256` file), and every
+  entry matches `datapackage.json`;
+- every capture file of the captures list is in the package byte for byte
+  (its SHA-256 was taken while it was read from `incoming/`), and every
+  capture the index knows of the week is on the list;
+- every WARC record is readable and its block and payload digests are valid;
+- every indexed record of the week is in the package exactly where the
+  index says, and no indexable record of the package is missing from the
+  index; every revisit points to a record of the package with the same digest;
+- every CDXJ and `pages.jsonl` line points at its record.
+
+Records are compared with the index in batches, so memory does not grow
+with the number of records.
+
+### Seal attempts
+
+Every attempt is recorded in the application database (`seal_runs`) with
+the instance that made it, its phase, progress and a heartbeat. An attempt
+whose heartbeat stops (the process ran out of memory, crashed or was
+restarted) is marked *interrupted* and its week *failed*. Failed weeks are
+sealed again automatically (3 attempts, an hour apart) and are flagged on the
+dashboard, under System and by the `HoarfrostSealFailed` alert until a seal
+succeeds.
 
 After sealing, reading a record is **one range request**: package key,
 absolute offset, length, gunzip.

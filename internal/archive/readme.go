@@ -31,6 +31,7 @@ needed to read it is described here; the application is not required.
     weekly/<year>/W<week>.wacz               weekly package (permanent)
     weekly/<year>/W<week>.wacz.sha256        SHA-256 of the package (sha256sum format)
     weekly/<year>/W<week>.parquet            page table of the week (Apache Parquet)
+    weekly/<year>/W<week>.captures.jsonl     capture files in the package: offset, size, SHA-256
     catalog/<year>/W<week>.json              package status: counts, hash, verification
 
 ## Formats
@@ -87,6 +88,10 @@ engine and resource counts.
     sha256sum -c W41.wacz.sha256
     unzip -l W41.wacz                  # every entry must be "Stored"
     unzip -p W41.wacz datapackage.json # SHA-256 of each entry
+
+W41.captures.jsonl lists every capture file of the week with the absolute
+offset of its first byte in the package, its size and its SHA-256, taken
+when it was read from incoming/: the bytes at that offset must hash to it.
 
 Hashes are for fixity checks only and are not legal evidence.
 

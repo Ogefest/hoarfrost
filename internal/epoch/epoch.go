@@ -86,6 +86,10 @@ func (id ID) WeeklyKey() string { return "weekly/" + id.path() + ".wacz" }
 // ParquetKey is the storage key of the page table of a sealed epoch.
 func (id ID) ParquetKey() string { return "weekly/" + id.path() + ".parquet" }
 
+// CapturesKey is the storage key of the list of capture files packaged
+// into the sealed WACZ package, with their places and digests.
+func (id ID) CapturesKey() string { return "weekly/" + id.path() + ".captures.jsonl" }
+
 // ChecksumKey is the storage key of the package's sha256 file.
 func (id ID) ChecksumKey() string { return id.WeeklyKey() + ".sha256" }
 

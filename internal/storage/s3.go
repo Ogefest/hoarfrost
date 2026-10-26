@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -126,6 +127,146 @@ func (s *S3) Put(ctx context.Context, key string, r io.Reader, size int64) error
 	}
 	if st.Size != cr.n {
 		return fmt.Errorf("storage: verify %s: size %d, sent %d", key, st.Size, cr.n)
+	}
+	return nil
+}
+
+// Streamed uploads send this many parts at once; each holds a part-sized
+// buffer in memory.
+const s3UploadThreads = 3
+
+// s3PartSize chooses the part size of a streamed upload: 16 MiB, or more
+// when sizeHint would need over 9000 of the 10000 parts S3 allows. With an
+// unknown size, 64 MiB parts allow objects up to 640 GB.
+func s3PartSize(sizeHint int64) uint64 {
+	const mib = 1 << 20
+	if sizeHint <= 0 {
+		return 64 * mib
+	}
+	p := (sizeHint/9000 + mib - 1) / mib * mib
+	return uint64(min(max(p, 16*mib), 5<<30))
+}
+
+// Create uploads the object in parts while it is written; it becomes
+// visible when the multipart upload completes in Commit. A previous
+// unfinished upload of the same key (e.g. of a process that was killed) is
+// removed first.
+func (s *S3) Create(ctx context.Context, key string, sizeHint int64) (Writer, error) {
+	if err := ValidKey(key); err != nil {
+		return nil, err
+	}
+	_ = s.client.RemoveIncompleteUpload(ctx, s.cfg.Bucket, s.key(key))
+	// Parts carry Content-MD5 instead of a streaming (aws-chunked) payload
+	// signature, which not every S3-compatible server decodes.
+	opts := minio.PutObjectOptions{
+		ContentType: "application/octet-stream", SendContentMd5: true, DisableContentSha256: true,
+		PartSize: s3PartSize(sizeHint), ConcurrentStreamParts: true, NumThreads: s3UploadThreads,
+	}
+	upload := func(ctx context.Context, r io.Reader) error {
+		_, err := s.client.PutObject(ctx, s.cfg.Bucket, s.key(key), r, -1, opts)
+		if err != nil {
+			_ = s.client.RemoveIncompleteUpload(context.WithoutCancel(ctx), s.cfg.Bucket, s.key(key))
+			return fmt.Errorf("storage: put %s: %w", key, err)
+		}
+		return nil
+	}
+	check := func(n int64) error {
+		st, err := s.Stat(ctx, key)
+		if err != nil {
+			return fmt.Errorf("storage: verify %s: %w", key, err)
+		}
+		if st.Size != n {
+			return fmt.Errorf("storage: verify %s: size %d, sent %d", key, st.Size, n)
+		}
+		return nil
+	}
+	return newPipeWriter(ctx, upload, check), nil
+}
+
+// Get reads the object with one streaming request, resuming from the
+// current position after a broken connection.
+func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	if err := ValidKey(key); err != nil {
+		return nil, 0, err
+	}
+	info, err := s.client.StatObject(ctx, s.cfg.Bucket, s.key(key), minio.StatObjectOptions{})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, 0, fmt.Errorf("%w: %s", ErrNotExist, key)
+		}
+		return nil, 0, err
+	}
+	return &s3Stream{ctx: ctx, s: s, key: s.key(key), size: info.Size, etag: info.ETag}, info.Size, nil
+}
+
+// s3StreamRetries bounds reconnections in a row without data in between.
+const s3StreamRetries = 5
+
+type s3Stream struct {
+	ctx     context.Context
+	s       *S3
+	key     string
+	size    int64
+	etag    string // a resumed read must get the same object
+	pos     int64
+	obj     *minio.Object
+	retries int
+}
+
+func (r *s3Stream) Read(p []byte) (int, error) {
+	if r.pos >= r.size {
+		return 0, io.EOF
+	}
+	for {
+		if r.obj == nil {
+			opts := minio.GetObjectOptions{}
+			if r.etag != "" {
+				if err := opts.SetMatchETag(r.etag); err != nil {
+					return 0, err
+				}
+			}
+			if r.pos > 0 {
+				if err := opts.SetRange(r.pos, r.size-1); err != nil {
+					return 0, err
+				}
+			}
+			obj, err := r.s.client.GetObject(r.ctx, r.s.cfg.Bucket, r.key, opts)
+			if err != nil {
+				return 0, err
+			}
+			r.obj = obj
+		}
+		n, err := r.obj.Read(p)
+		r.pos += int64(n)
+		if n > 0 {
+			r.retries = 0
+		}
+		if err == nil || (errors.Is(err, io.EOF) && r.pos == r.size) {
+			return n, err
+		}
+		if errors.Is(err, io.EOF) {
+			err = fmt.Errorf("storage: %s ended at %d of %d bytes", r.key, r.pos, r.size)
+		}
+		r.obj.Close()
+		r.obj = nil
+		if r.ctx.Err() != nil || r.retries >= s3StreamRetries {
+			return n, err
+		}
+		r.retries++
+		select {
+		case <-r.ctx.Done():
+			return n, r.ctx.Err()
+		case <-time.After(time.Duration(r.retries) * time.Second):
+		}
+		if n > 0 {
+			return n, nil
+		}
+	}
+}
+
+func (r *s3Stream) Close() error {
+	if r.obj != nil {
+		return r.obj.Close()
 	}
 	return nil
 }

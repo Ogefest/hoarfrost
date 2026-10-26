@@ -5,6 +5,7 @@ package wacz
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -21,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ogefest/hoarfrost/internal/cdxj"
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/recorder"
 )
@@ -44,7 +44,10 @@ const (
 
 // Input is one capture file to package.
 type Input struct {
-	Capture recorder.CaptureFile
+	// Name is the capture file name, <ts>-<source>-<id>.warc.gz.
+	Name string
+	// Size is the size the file must have.
+	Size int64
 	// Open returns the WARC content of the capture file.
 	Open func(ctx context.Context) (io.ReadCloser, error)
 }
@@ -60,22 +63,43 @@ type Options struct {
 	// ZipNumThreshold switches to a block index above this many CDXJ lines
 	// (0 means DefaultZipNumMin, negative disables).
 	ZipNumThreshold int
+	// SpoolDir holds temporary sort files of the index and the pages list
+	// (os.TempDir() when empty); they need a small fraction of the package
+	// size.
+	SpoolDir string
+	// SortMemory bounds the index and page lines kept in memory
+	// (DefaultSortMemory when 0).
+	SortMemory int
+	// OnCapture is called after each capture file is written, with its
+	// description read from the copied bytes (record offsets relative to
+	// the capture file) and its place in the package.
+	OnCapture func(cf recorder.CaptureFile, p Placement) error
+	// Progress is called after each capture file with the bytes of capture
+	// files written so far.
+	Progress func(done int64)
 }
 
-// RecordLocation is the absolute position of a record in the package.
-type RecordLocation struct {
+// Placement is where a capture file was written in the package.
+type Placement struct {
+	// Name is the capture file name.
+	Name string
+	// File is the WARC file in archive/ that holds it.
+	File string
+	// Offset is the absolute offset of its first byte in the package.
 	Offset int64
-	Length int64
+	Size   int64
+	// SHA256 is the hex digest of its bytes.
+	SHA256 string
 }
 
 // Result describes a built package.
 type Result struct {
-	Path   string
 	Size   int64
 	SHA256 string
-	// Records holds positions of indexable and metadata records.
-	Records   map[string]RecordLocation
+	// Files are the WARC files in archive/.
 	Files     []string
+	Captures  int
+	Records   int
 	Pages     int
 	CDXJLines int
 	ZipNum    bool
@@ -125,18 +149,18 @@ type part struct {
 
 func plan(inputs []Input, concat bool) []part {
 	sorted := append([]Input(nil), inputs...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Capture.Name < sorted[j].Capture.Name })
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	if !concat {
 		out := make([]part, len(sorted))
 		for i, in := range sorted {
-			out[i] = part{name: in.Capture.Name, inputs: []Input{in}}
+			out[i] = part{name: in.Name, inputs: []Input{in}}
 		}
 		return out
 	}
 	bySource := map[string]*part{}
 	var order []string
 	for _, in := range sorted {
-		src := SourceFromName(in.Capture.Name)
+		src := SourceFromName(in.Name)
 		p, ok := bySource[src]
 		if !ok {
 			p = &part{name: src + ".warc.gz"}
@@ -177,8 +201,11 @@ func (hw *hashingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Build writes a WACZ package to path.
-func Build(ctx context.Context, outPath string, inputs []Input, opts Options) (*Result, error) {
+// Build streams a WACZ package to w. Every capture file is read once: its
+// bytes are copied into the package and scanned for the index on the way.
+// Memory use does not grow with the number of records; index and page
+// lines are sorted through temporary files in opts.SpoolDir.
+func Build(ctx context.Context, w io.Writer, inputs []Input, opts Options) (*Result, error) {
 	if len(inputs) == 0 {
 		return nil, errors.New("wacz: nothing to package")
 	}
@@ -188,26 +215,28 @@ func Build(ctx context.Context, outPath string, inputs []Input, opts Options) (*
 	if opts.ZipNumThreshold == 0 {
 		opts.ZipNumThreshold = DefaultZipNumMin
 	}
-	f, err := os.Create(outPath)
-	if err != nil {
-		return nil, err
+	if opts.SortMemory == 0 {
+		opts.SortMemory = DefaultSortMemory
 	}
-	ok := false
-	defer func() {
-		if !ok {
-			f.Close()
-			os.Remove(outPath)
-		}
-	}()
-	zw := zip.NewWriter(f)
+	out := &hashingWriter{w: w, h: sha256.New()}
+	zw := zip.NewWriter(out)
+	cdx := newLineSorter(opts.SpoolDir, opts.SortMemory/2)
+	defer cdx.close()
+	pages := newLineSorter(opts.SpoolDir, opts.SortMemory/2)
+	defer pages.close()
+
 	var resources []Resource
-	addEntry := func(name string, write func(w io.Writer) error) error {
+	addEntry := func(name string, write func(w io.Writer, start int64) error) error {
 		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store, Modified: opts.Created.UTC()})
 		if err != nil {
 			return err
 		}
+		// The local header is written; what follows is the entry's data.
+		if err := zw.Flush(); err != nil {
+			return err
+		}
 		hw := &hashingWriter{w: w, h: sha256.New()}
-		if err := write(hw); err != nil {
+		if err := write(hw, out.n); err != nil {
 			return err
 		}
 		resources = append(resources, Resource{
@@ -216,47 +245,51 @@ func Build(ctx context.Context, outPath string, inputs []Input, opts Options) (*
 		return nil
 	}
 
-	type shift struct {
-		file  string
-		delta int64
-	}
-	shifts := map[string]shift{}
-	var lines []cdxj.Line
-	var pages []PageLine
-	res := &Result{Path: outPath, Records: map[string]RecordLocation{}}
+	res := &Result{}
+	var done int64
 	for _, p := range plan(inputs, opts.ConcatBySource) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		res.Files = append(res.Files, p.name)
-		err := addEntry(ArchiveDir+p.name, func(w io.Writer) error {
+		err := addEntry(ArchiveDir+p.name, func(w io.Writer, start int64) error {
 			var written int64
 			for _, in := range p.inputs {
-				rc, err := in.Open(ctx)
+				cf, sum, err := copyCapture(ctx, w, in, opts.Epoch)
 				if err != nil {
-					return fmt.Errorf("wacz: open %s: %w", in.Capture.Name, err)
+					return err
 				}
-				n, err := io.Copy(w, rc)
-				rc.Close()
-				if err != nil {
-					return fmt.Errorf("wacz: copy %s: %w", in.Capture.Name, err)
-				}
-				if n != in.Capture.Size {
-					return fmt.Errorf("wacz: %s has %d bytes, index says %d", in.Capture.Name, n, in.Capture.Size)
-				}
-				shifts[in.Capture.Name] = shift{file: p.name, delta: written}
-				for _, r := range in.Capture.Records {
+				for _, r := range cf.Records {
+					res.Records++
 					if !r.Indexable() {
 						continue
 					}
 					r.Offset += written
-					lines = append(lines, r.CDXJ(p.name))
+					if err := cdx.add(r.CDXJ(p.name).String()); err != nil {
+						return err
+					}
 				}
-				for _, pg := range in.Capture.Pages {
-					pages = append(pages, PageLine{PageInfo: pg.PageInfo, MetadataID: pg.MetadataID, Filename: p.name,
-						MetaOffset: pg.Offset + written, MetaLength: pg.Length})
+				for _, pg := range cf.Pages {
+					line, err := pageSortLine(PageLine{PageInfo: pg.PageInfo, MetadataID: pg.MetadataID, Filename: p.name,
+						MetaOffset: pg.Offset + written, MetaLength: pg.Length}, pages.n)
+					if err != nil {
+						return err
+					}
+					if err := pages.add(line); err != nil {
+						return err
+					}
 				}
-				written += n
+				res.Captures++
+				if opts.OnCapture != nil {
+					if err := opts.OnCapture(cf, Placement{Name: in.Name, File: p.name, Offset: start + written, Size: cf.Size, SHA256: sum}); err != nil {
+						return err
+					}
+				}
+				written += cf.Size
+				done += cf.Size
+				if opts.Progress != nil {
+					opts.Progress(done)
+				}
 			}
 			return nil
 		})
@@ -265,26 +298,22 @@ func Build(ctx context.Context, outPath string, inputs []Input, opts Options) (*
 		}
 	}
 
-	res.CDXJLines = len(lines)
-	if opts.ZipNumThreshold > 0 && len(lines) > opts.ZipNumThreshold {
+	res.CDXJLines = cdx.n
+	if opts.ZipNumThreshold > 0 && cdx.n > opts.ZipNumThreshold {
 		res.ZipNum = true
-		idx, blocks, err := zipNum(lines)
-		if err != nil {
+		var idx bytes.Buffer
+		if err := addEntry(PathZipNumCDX, func(w io.Writer, _ int64) error { return writeZipNum(w, cdx, &idx) }); err != nil {
 			return nil, err
 		}
-		if err := addEntry(PathZipNumCDX, func(w io.Writer) error { _, err := w.Write(blocks); return err }); err != nil {
+		if err := addEntry(PathZipNumIdx, func(w io.Writer, _ int64) error { _, err := w.Write(idx.Bytes()); return err }); err != nil {
 			return nil, err
 		}
-		if err := addEntry(PathZipNumIdx, func(w io.Writer) error { _, err := w.Write(idx); return err }); err != nil {
-			return nil, err
-		}
-	} else if err := addEntry(PathCDXJ, func(w io.Writer) error { return cdxj.Write(w, lines) }); err != nil {
+	} else if err := addEntry(PathCDXJ, func(w io.Writer, _ int64) error { return writeLines(w, cdx, "", false) }); err != nil {
 		return nil, err
 	}
 
-	sort.SliceStable(pages, func(i, j int) bool { return pages[i].Captured.Before(pages[j].Captured) })
-	res.Pages = len(pages)
-	if err := addEntry(PathPages, func(w io.Writer) error { return writePages(w, pages) }); err != nil {
+	res.Pages = pages.n
+	if err := addEntry(PathPages, func(w io.Writer, _ int64) error { return writeLines(w, pages, pagesHeader, true) }); err != nil {
 		return nil, err
 	}
 
@@ -305,44 +334,36 @@ func Build(ctx context.Context, outPath string, inputs []Input, opts Options) (*
 	if err := zw.Close(); err != nil {
 		return nil, err
 	}
-	if err := f.Sync(); err != nil {
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
-		return nil, err
-	}
-	ok = true
-
-	r, err := OpenFile(outPath)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	dataOffsets, err := r.WARCOffsets()
-	if err != nil {
-		return nil, err
-	}
-	for _, in := range inputs {
-		sh := shifts[in.Capture.Name]
-		base, ok := dataOffsets[sh.file]
-		if !ok {
-			return nil, fmt.Errorf("wacz: %s missing from package", sh.file)
-		}
-		for _, rec := range in.Capture.Records {
-			if rec.Indexable() || rec.Type == "metadata" {
-				res.Records[rec.ID] = RecordLocation{Offset: base + sh.delta + rec.Offset, Length: rec.Length}
-			}
-		}
-	}
-	st, err := os.Stat(outPath)
-	if err != nil {
-		return nil, err
-	}
-	res.Size = st.Size()
-	if res.SHA256, err = FileSHA256(outPath); err != nil {
-		return nil, err
-	}
+	res.Size, res.SHA256 = out.n, hex.EncodeToString(out.h.Sum(nil))
 	return res, nil
+}
+
+// copyCapture copies a capture file to w and describes it from the copied
+// bytes. It checks that the file has the expected size and ends with its
+// last record.
+func copyCapture(ctx context.Context, w io.Writer, in Input, ep epoch.ID) (recorder.CaptureFile, string, error) {
+	rc, err := in.Open(ctx)
+	if err != nil {
+		return recorder.CaptureFile{}, "", fmt.Errorf("wacz: open %s: %w", in.Name, err)
+	}
+	defer rc.Close()
+	hw := &hashingWriter{w: w, h: sha256.New()}
+	tee := io.TeeReader(rc, hw)
+	cf, err := recorder.Scan(tee, in.Name, ep)
+	if err != nil {
+		return cf, "", fmt.Errorf("wacz: %s: %w", in.Name, err)
+	}
+	// A valid file is read to its end by the scan; copy anything left.
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		return cf, "", fmt.Errorf("wacz: copy %s: %w", in.Name, err)
+	}
+	if hw.n != in.Size {
+		return cf, "", fmt.Errorf("wacz: %s has %d bytes, expected %d", in.Name, hw.n, in.Size)
+	}
+	if cf.Size != hw.n {
+		return cf, "", fmt.Errorf("wacz: %s: records end at byte %d of %d", in.Name, cf.Size, hw.n)
+	}
+	return cf, hex.EncodeToString(hw.h.Sum(nil)), nil
 }
 
 func writeRaw(zw *zip.Writer, name string, b []byte, mod time.Time) error {
@@ -354,48 +375,85 @@ func writeRaw(zw *zip.Writer, name string, b []byte, mod time.Time) error {
 	return err
 }
 
-func writePages(w io.Writer, pages []PageLine) error {
-	enc := json.NewEncoder(w)
+const pagesHeader = `{"format":"json-pages-1.0","id":"pages","title":"All Pages"}`
+
+// pageSortLine makes a sortable line of a page: capture time and sequence
+// number (keeping the input order of pages captured at the same time),
+// then the JSON line after a NUL byte, which JSON never contains.
+func pageSortLine(p PageLine, seq int) (string, error) {
+	var b bytes.Buffer
+	b.WriteString(p.Captured.UTC().Format("20060102T150405.000000000"))
+	fmt.Fprintf(&b, "%012d\x00", seq)
+	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(map[string]string{"format": "json-pages-1.0", "id": "pages", "title": "All Pages"}); err != nil {
-		return err
+	if err := enc.Encode(p); err != nil {
+		return "", err
 	}
-	for _, p := range pages {
-		if err := enc.Encode(p); err != nil {
-			return err
-		}
-	}
-	return nil
+	return strings.TrimSuffix(b.String(), "\n"), nil
 }
 
-// zipNum builds a ZipNum block index: sorted CDXJ lines gzipped in blocks
-// plus an index with the first key of each block.
-func zipNum(entries []cdxj.Line) (idx, blocks []byte, err error) {
-	lines := make([]string, len(entries))
-	for i, e := range entries {
-		lines[i] = e.String()
+// writeLines writes the sorted lines after an optional header line;
+// keyed lines lose their sort key (up to the NUL byte).
+func writeLines(w io.Writer, s *lineSorter, header string, keyed bool) error {
+	bw := bufio.NewWriterSize(w, 1<<20)
+	if header != "" {
+		bw.WriteString(header + "\n")
 	}
-	cdxj.Sort(lines)
-	var out, ib bytes.Buffer
-	ib.WriteString(`!meta 0 {"format":"cdxj-gzip-1.0","filename":"index.cdx.gz"}` + "\n")
-	for start := 0; start < len(lines); start += zipNumBlockLines {
-		end := min(start+zipNumBlockLines, len(lines))
-		offset := out.Len()
-		gz := gzip.NewWriter(&out)
-		for _, l := range lines[start:end] {
-			if _, err := gz.Write([]byte(l + "\n")); err != nil {
-				return nil, nil, err
+	err := s.each(func(l string) error {
+		if keyed {
+			_, l, _ = strings.Cut(l, "\x00")
+		}
+		bw.WriteString(l)
+		return bw.WriteByte('\n')
+	})
+	if err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// writeZipNum writes sorted CDXJ lines gzipped in blocks and collects the
+// ZipNum index with the first key of each block in idx.
+func writeZipNum(w io.Writer, s *lineSorter, idx *bytes.Buffer) error {
+	idx.WriteString(`!meta 0 {"format":"cdxj-gzip-1.0","filename":"index.cdx.gz"}` + "\n")
+	cw := &hashingWriter{w: w, h: sha256.New()}
+	var gz *gzip.Writer
+	var first string
+	var start int64
+	inBlock, block := 0, 0
+	closeBlock := func() error {
+		if err := gz.Close(); err != nil {
+			return err
+		}
+		block++
+		key, rest, _ := strings.Cut(first, " ")
+		tsPart, _, _ := strings.Cut(rest, " ")
+		js, _ := json.Marshal(map[string]any{"offset": start, "length": cw.n - start, "lineno": block})
+		idx.WriteString(key + " " + tsPart + " " + string(js) + "\n")
+		inBlock = 0
+		return nil
+	}
+	err := s.each(func(l string) error {
+		if inBlock == 0 {
+			first, start = l, cw.n
+			if gz == nil {
+				gz = gzip.NewWriter(cw)
+			} else {
+				gz.Reset(cw)
 			}
 		}
-		if err := gz.Close(); err != nil {
-			return nil, nil, err
+		if _, err := io.WriteString(gz, l+"\n"); err != nil {
+			return err
 		}
-		key, rest, _ := strings.Cut(lines[start], " ")
-		tsPart, _, _ := strings.Cut(rest, " ")
-		js, _ := json.Marshal(map[string]any{"offset": offset, "length": out.Len() - offset, "lineno": start/zipNumBlockLines + 1})
-		ib.WriteString(key + " " + tsPart + " " + string(js) + "\n")
+		if inBlock++; inBlock == zipNumBlockLines {
+			return closeBlock()
+		}
+		return nil
+	})
+	if err == nil && inBlock > 0 {
+		err = closeBlock()
 	}
-	return ib.Bytes(), out.Bytes(), nil
+	return err
 }
 
 // FileSHA256 hashes a local file.

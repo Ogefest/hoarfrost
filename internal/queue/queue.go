@@ -76,6 +76,9 @@ func New(db *sql.DB) *Queue {
 	return &Queue{db: db, Now: time.Now, MaxAttempts: 3, Backoff: 5 * time.Minute, served: map[string]time.Time{}}
 }
 
+// DB returns the application database the queue lives in.
+func (q *Queue) DB() *sql.DB { return q.db }
+
 // Domain returns the lower-cased host of a URL.
 func Domain(raw string) string {
 	u, err := url.Parse(raw)

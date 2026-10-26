@@ -18,6 +18,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
 	"github.com/ogefest/hoarfrost/internal/recorder"
+	"github.com/ogefest/hoarfrost/internal/sealrun"
 )
 
 type queueData struct {
@@ -139,6 +140,22 @@ type systemData struct {
 	Task      string
 	TaskState string
 	TaskLast  string
+	// Seal attempts: failing weeks, attempts in progress by
+	// "storage/epoch", the latest attempts and the retry policy.
+	SealFailures []sealFailure
+	Sealing      map[string]sealrun.Run
+	SealRuns     []sealrun.Run
+	SealAttempts int
+	SealRetry    time.Duration
+}
+
+// sealFailure is a week whose latest seal attempt failed.
+type sealFailure struct {
+	Key string
+	sealrun.Failure
+	// Retried tells whether the coordinator will try again by itself.
+	Retried bool
+	NextTry time.Time
 }
 
 func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +182,26 @@ func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Users, _ = s.Auth.Users(ctx)
 	d.Task, d.TaskState, d.TaskLast = s.tasks.snapshot()
+	d.SealAttempts, d.SealRetry = s.Coord.SealPolicy()
+	d.Sealing = map[string]sealrun.Run{}
+	if runs, err := s.Coord.SealRuns(ctx, 20); err == nil {
+		d.SealRuns = runs
+		for _, run := range runs {
+			if run.Running() {
+				d.Sealing[run.Storage+"/"+string(run.Epoch)] = run
+			}
+		}
+	}
+	if failures, err := s.Coord.SealFailures(ctx); err == nil {
+		for k, f := range failures {
+			sf := sealFailure{Key: k.Storage + "/" + string(k.Epoch), Failure: f, Retried: f.Attempts < d.SealAttempts}
+			if sf.Retried {
+				sf.NextTry = f.Last.Finished.Add(d.SealRetry)
+			}
+			d.SealFailures = append(d.SealFailures, sf)
+		}
+		sort.Slice(d.SealFailures, func(i, j int) bool { return d.SealFailures[i].Key > d.SealFailures[j].Key })
+	}
 	s.render(w, r, "system.html", "System", d)
 }
 

@@ -217,20 +217,42 @@ func TestRelocateAndEpochs(t *testing.T) {
 	db := openDB(t)
 	fixture(t, db)
 	ctx := context.Background()
-	if err := db.Relocate(ctx, map[string]Location{"<r1>": {"weekly/2026/W41.wacz", 5000, 50, "serwis.warc.gz"}},
-		map[string]Location{"<meta-a.warc.gz>": {"weekly/2026/W41.wacz", 7000, 70, ""}}, map[string]string{"a.warc.gz": "serwis.warc.gz"}); err != nil {
+	const pkg = "weekly/2026/W41.wacz"
+	a := CaptureMove{From: "incoming/2026/W41/a.warc.gz", Name: "a.warc.gz", Shift: 4900, File: "serwis.warc.gz"}
+	b := CaptureMove{From: "incoming/2026/W41/b.warc.gz", Name: "b.warc.gz", Shift: 9000, File: "serwis.warc.gz"}
+	c := CaptureMove{From: "incoming/2026/W41/c.warc.gz", Name: "c.warc.gz", Shift: 12000, File: "inny.warc.gz"}
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b}); err == nil || !strings.Contains(err.Error(), "1 record(s)") {
+		t.Fatalf("a capture left out must be reported: %v", err)
+	}
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b, c}); err != nil {
+		t.Fatal(err)
+	}
+	// Running it again (an interrupted seal resumed) changes nothing.
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b, c}); err != nil {
 		t.Fatal(err)
 	}
 	r, _ := db.Record(ctx, "<r1>")
-	if r.Location != "weekly/2026/W41.wacz" || r.Offset != 5000 || r.File != "serwis.warc.gz" {
+	if r.Location != pkg || r.Offset != 5000 || r.Length != 50 || r.File != "serwis.warc.gz" {
+		t.Fatalf("%+v", r)
+	}
+	if r, _ := db.Record(ctx, "<r4>"); r.Offset != 9160 || r.File != "serwis.warc.gz" {
 		t.Fatalf("%+v", r)
 	}
 	pages, _ := db.PageCaptures(ctx, "https://serwis.pl/budzet")
-	if pages[0].File != "serwis.warc.gz" || pages[0].Location != "weekly/2026/W41.wacz" || pages[0].Offset != 7000 {
-		t.Fatalf("page file %s", pages[0].File)
+	if pages[0].File != "serwis.warc.gz" || pages[0].Location != pkg || pages[0].Offset != 4900 {
+		t.Fatalf("page %+v", pages[0])
 	}
-	if err := db.Relocate(ctx, map[string]Location{"<nope>": {}}, nil, nil); err == nil {
-		t.Fatal("unknown record must fail")
+	cont, err := db.Contents(ctx, "", "2026-W41", pkg)
+	if err != nil || cont.Records != 5 || cont.RecordsElsewhere != 0 || cont.Pages != 3 || cont.PagesElsewhere != 0 {
+		t.Fatalf("contents %+v %v", cont, err)
+	}
+	byID, err := db.RecordsByID(ctx, []string{"<r1>", "<r5>", "<nope>"})
+	if err != nil || len(byID) != 2 || byID["<r5>"].Offset != 12100 {
+		t.Fatalf("by id %+v %v", byID, err)
+	}
+	locs, err := db.PageLocations(ctx, []string{pages[0].MetadataID})
+	if err != nil || locs[pages[0].MetadataID].Offset != 4900 {
+		t.Fatalf("page locations %+v %v", locs, err)
 	}
 
 	e, _ := db.Epoch(ctx, "", "2026-W41")

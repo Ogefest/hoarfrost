@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ogefest/hoarfrost/internal/cdxj"
 	"github.com/ogefest/hoarfrost/internal/engine"
@@ -58,7 +62,7 @@ func captures(t *testing.T) []wacz.Input {
 			}
 		}
 		path := cf.Path
-		inputs = append(inputs, wacz.Input{Capture: cf, Open: func(context.Context) (io.ReadCloser, error) { return os.Open(path) }})
+		inputs = append(inputs, wacz.Input{Name: cf.Name, Size: cf.Size, Open: func(context.Context) (io.ReadCloser, error) { return os.Open(path) }})
 	}
 	return inputs
 }
@@ -72,15 +76,46 @@ func (m lookupFunc) Lookup(_ context.Context, _ epoch.ID, d string) (*recorder.R
 	return nil, nil
 }
 
-func build(t *testing.T, inputs []wacz.Input, opts wacz.Options) *wacz.Result {
+// built is a package written to a local file with the positions of its
+// records collected from Build's callbacks.
+type built struct {
+	*wacz.Result
+	Path   string
+	Locs   map[string]loc // indexable and metadata records by ID
+	Placed []wacz.Placement
+}
+
+type loc struct{ Offset, Length int64 }
+
+func build(t *testing.T, inputs []wacz.Input, opts wacz.Options) *built {
 	t.Helper()
 	opts.Epoch = "2026-W41"
 	opts.Software = "hoarfrost/test"
-	res, err := wacz.Build(context.Background(), filepath.Join(t.TempDir(), "W41.wacz"), inputs, opts)
+	if opts.SpoolDir == "" {
+		opts.SpoolDir = t.TempDir()
+	}
+	b := &built{Path: filepath.Join(t.TempDir(), "W41.wacz"), Locs: map[string]loc{}}
+	opts.OnCapture = func(cf recorder.CaptureFile, p wacz.Placement) error {
+		b.Placed = append(b.Placed, p)
+		for _, r := range cf.Records {
+			if r.Indexable() || r.Type == warcio.TypeMetadata {
+				b.Locs[r.ID] = loc{p.Offset + r.Offset, r.Length}
+			}
+		}
+		return nil
+	}
+	f, err := os.Create(b.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return res
+	defer f.Close()
+	if b.Result, err = wacz.Build(context.Background(), f, inputs, opts); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.Stat(); st.Size() != b.Size {
+		t.Fatalf("result size %d, file %d", b.Size, st.Size())
+	}
+	return b
 }
 
 // TestAbsoluteOffsetsMatchSequentialRead is property 14.4: every record read
@@ -113,10 +148,10 @@ func TestAbsoluteOffsetsMatchSequentialRead(t *testing.T) {
 					sequential[rec.ID()] = rec
 				}
 			}
-			if len(res.Records) == 0 {
+			if len(res.Locs) == 0 {
 				t.Fatal("no records")
 			}
-			for id, loc := range res.Records {
+			for id, loc := range res.Locs {
 				got, err := r.ReadRecord(loc.Offset, loc.Length)
 				if err != nil {
 					t.Fatalf("%s: %v", id, err)
@@ -128,13 +163,13 @@ func TestAbsoluteOffsetsMatchSequentialRead(t *testing.T) {
 			}
 
 			lines, err := r.CDXJ()
-			if err != nil || len(lines) != len(res.Records)-res.Pages {
-				t.Fatalf("cdxj %d lines, %d records: %v", len(lines), len(res.Records), err)
+			if err != nil || len(lines) != len(res.Locs)-res.Pages {
+				t.Fatalf("cdxj %d lines, %d records: %v", len(lines), len(res.Locs), err)
 			}
 			pages, _ := r.Pages()
 			for _, p := range pages {
 				rec, err := r.ReadRecord(offsetsOf(r)[p.Filename]+p.MetaOffset, p.MetaLength)
-				if err != nil || rec.ID() != p.MetadataID || res.Records[p.MetadataID].Length != p.MetaLength {
+				if err != nil || rec.ID() != p.MetadataID || res.Locs[p.MetadataID].Length != p.MetaLength {
 					t.Fatalf("metadata record of %s not at its offset: %v", p.URL, err)
 				}
 			}
@@ -145,7 +180,7 @@ func TestAbsoluteOffsetsMatchSequentialRead(t *testing.T) {
 					t.Fatalf("cdxj filename %s not in package", l.Filename)
 				}
 				off, _ := strconv.ParseInt(l.Offset, 10, 64)
-				if loc := res.Records[l.RecordID]; loc.Offset != base+off {
+				if loc := res.Locs[l.RecordID]; loc.Offset != base+off {
 					t.Fatalf("cdxj offset for %s: %d+%d != %d", l.URL, base, off, loc.Offset)
 				}
 			}
@@ -303,18 +338,14 @@ func TestZIP64(t *testing.T) {
 		t.Fatalf("capture only %d bytes", cf.Size)
 	}
 	path := cf.Path
-	res, err := wacz.Build(context.Background(), filepath.Join(dir, "big.wacz"),
-		[]wacz.Input{{Capture: cf, Open: func(context.Context) (io.ReadCloser, error) { return os.Open(path) }}}, wacz.Options{Epoch: "2026-W41"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := build(t, []wacz.Input{{Name: cf.Name, Size: cf.Size, Open: func(context.Context) (io.ReadCloser, error) { return os.Open(path) }}}, wacz.Options{})
 	os.Remove(path)
 	r, err := wacz.OpenFile(res.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	loc := res.Records[last.ID]
+	loc := res.Locs[last.ID]
 	if loc.Offset < 1<<32 {
 		t.Fatalf("last record at %d, expected beyond 4 GiB", loc.Offset)
 	}
@@ -327,5 +358,74 @@ func TestZIP64(t *testing.T) {
 	}
 	if probs := r.Verify(); len(probs) != 0 {
 		t.Fatalf("verify: %+v", probs)
+	}
+}
+
+// TestPlacementsMatchPackage checks that each placement points at the bytes
+// of its capture file inside the WARC entries of the package.
+func TestPlacementsMatchPackage(t *testing.T) {
+	inputs := captures(t)
+	for _, concat := range []bool{false, true} {
+		res := build(t, inputs, wacz.Options{ConcatBySource: concat})
+		data, _ := os.ReadFile(res.Path)
+		r, _ := wacz.OpenFile(res.Path)
+		offsets := offsetsOf(r)
+		r.Close()
+		if len(res.Placed) != len(inputs) || res.Captures != len(inputs) {
+			t.Fatalf("placed %d of %d", len(res.Placed), len(inputs))
+		}
+		for _, p := range res.Placed {
+			var in wacz.Input
+			for _, i := range inputs {
+				if i.Name == p.Name {
+					in = i
+				}
+			}
+			rc, _ := in.Open(context.Background())
+			want, _ := io.ReadAll(rc)
+			rc.Close()
+			sum := sha256.Sum256(want)
+			if p.SHA256 != hex.EncodeToString(sum[:]) || p.Size != int64(len(want)) {
+				t.Fatalf("placement %+v", p)
+			}
+			if !bytes.Equal(data[p.Offset:p.Offset+p.Size], want) {
+				t.Fatalf("%s not at offset %d", p.Name, p.Offset)
+			}
+			if base, ok := offsets[p.File]; !ok || p.Offset < base {
+				t.Fatalf("%s outside its file %s", p.Name, p.File)
+			}
+		}
+		if sum, _ := wacz.FileSHA256(res.Path); sum != res.SHA256 {
+			t.Fatal("sha256 of the stream differs from the file")
+		}
+	}
+}
+
+// TestSpilledSortMatchesInMemory builds with a tiny sort buffer, forcing
+// every index and page line through temporary run files; the package must
+// be identical to one sorted in memory.
+func TestSpilledSortMatchesInMemory(t *testing.T) {
+	inputs := captures(t)
+	created := time.Date(2026, 10, 13, 6, 0, 0, 0, time.UTC)
+	for _, zipnum := range []int{-1, 7} {
+		mem := build(t, inputs, wacz.Options{Created: created, ZipNumThreshold: zipnum})
+		spool := t.TempDir()
+		spilled := build(t, inputs, wacz.Options{Created: created, ZipNumThreshold: zipnum, SortMemory: 600, SpoolDir: spool})
+		if mem.SHA256 != spilled.SHA256 {
+			t.Fatalf("zipnum=%d: spilled sort produced a different package", zipnum)
+		}
+		if left, _ := os.ReadDir(spool); len(left) != 0 {
+			t.Fatalf("sort files left: %d", len(left))
+		}
+	}
+}
+
+func TestBuildRejectsWrongSize(t *testing.T) {
+	inputs := captures(t)
+	inputs[1].Size++
+	var buf bytes.Buffer
+	_, err := wacz.Build(context.Background(), &buf, inputs, wacz.Options{Epoch: "2026-W41", SpoolDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("err %v", err)
 	}
 }

@@ -14,16 +14,23 @@ import (
 
 // Catalog is the status document of a sealed epoch, stored in catalog/.
 type Catalog struct {
-	Epoch               epoch.ID      `json:"epoch"`
-	State               string        `json:"state"`
-	Package             string        `json:"package"`
-	SHA256              string        `json:"sha256"`
-	Size                int64         `json:"size"`
-	SealedAt            time.Time     `json:"sealedAt"`
-	Software            string        `json:"software"`
-	WACZVersion         string        `json:"waczVersion"`
-	Incoming            []string      `json:"incoming"`
-	Files               []string      `json:"files"`
+	Epoch       epoch.ID  `json:"epoch"`
+	State       string    `json:"state"`
+	Package     string    `json:"package"`
+	SHA256      string    `json:"sha256"`
+	Size        int64     `json:"size"`
+	SealedAt    time.Time `json:"sealedAt"`
+	Software    string    `json:"software"`
+	WACZVersion string    `json:"waczVersion"`
+	// Manifest is the key of the captures list (see Manifest); Captures
+	// and WARCFiles count its capture files and the package's WARC files.
+	Manifest  string `json:"manifest,omitempty"`
+	Captures  int    `json:"captures,omitempty"`
+	WARCFiles int    `json:"warcFiles,omitempty"`
+	// Incoming and Files list incoming keys and WARC files in catalogs
+	// written before the captures list existed.
+	Incoming            []string      `json:"incoming,omitempty"`
+	Files               []string      `json:"files,omitempty"`
 	Records             int           `json:"records"`
 	Revisits            int           `json:"revisits"`
 	Pages               int           `json:"pages"`
@@ -43,10 +50,16 @@ type ParquetInfo struct {
 
 // Verification is the outcome of checking a sealed package.
 type Verification struct {
-	At       time.Time      `json:"at"`
-	OK       bool           `json:"ok"`
-	Records  int            `json:"records"`
-	Problems []wacz.Problem `json:"problems,omitempty"`
+	At time.Time `json:"at"`
+	OK bool      `json:"ok"`
+	// Records counts indexed records found at their place, Scanned all
+	// WARC records read, Captures capture files found byte for byte.
+	Records  int `json:"records"`
+	Scanned  int `json:"scanned,omitempty"`
+	Captures int `json:"captures,omitempty"`
+	// Problems lists the first problems; MoreProblems counts the rest.
+	Problems     []wacz.Problem `json:"problems,omitempty"`
+	MoreProblems int            `json:"moreProblems,omitempty"`
 }
 
 // ReadCatalog loads the catalog document of an epoch.

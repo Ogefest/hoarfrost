@@ -756,3 +756,28 @@ func TestSourcesAPI(t *testing.T) {
 		t.Fatalf("second delete: %d", code)
 	}
 }
+
+// TestInterruptedSealShown: a week left sealing by a stopped process is
+// flagged on the dashboard and on the System page with its attempts.
+func TestInterruptedSealShown(t *testing.T) {
+	e := newEnv(t)
+	b := e.admin(t)
+	ctx := context.Background()
+	ep := epoch.ID("2026-W43")
+	idx := e.coord.Library().Index
+	if err := idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateSealing}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.coord.RecoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, body := b.get(t, "/system")
+	for _, want := range []string{"Sealing of default/2026-W43 failed", "out of memory", "Attempt 1 of 3", "Sealing attempts", "state-interrupted", "Seal now"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("system page lacks %q", want)
+		}
+	}
+	if _, body := b.get(t, "/"); !strings.Contains(body, "Sealing default/2026-W43 failed") {
+		t.Error("dashboard does not flag the interrupted seal")
+	}
+}

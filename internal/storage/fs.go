@@ -81,6 +81,77 @@ func (s *FS) Put(ctx context.Context, key string, r io.Reader, size int64) error
 	return nil
 }
 
+// Create writes to a temporary file next to the object; Commit syncs it and
+// renames it into place.
+func (s *FS) Create(ctx context.Context, key string, sizeHint int64) (Writer, error) {
+	p, err := s.path(key)
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(dir, tmpPrefix+"*")
+	if err != nil {
+		return nil, err
+	}
+	return &fsWriter{ctx: ctx, f: tmp, path: p, dir: dir}, nil
+}
+
+type fsWriter struct {
+	ctx   context.Context
+	f     *os.File
+	path  string
+	dir   string
+	n     int64
+	ended bool
+}
+
+func (w *fsWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := w.f.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func (w *fsWriter) Commit() (int64, error) {
+	if w.ended {
+		return 0, errors.New("storage: writer already finished")
+	}
+	w.ended = true
+	defer os.Remove(w.f.Name())
+	err := w.ctx.Err()
+	if err == nil {
+		err = w.f.Sync()
+	}
+	if cerr := w.f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(w.f.Name(), w.path)
+	}
+	if err != nil {
+		return w.n, err
+	}
+	if d, err := os.Open(w.dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return w.n, nil
+}
+
+func (w *fsWriter) Abort() {
+	if w.ended {
+		return
+	}
+	w.ended = true
+	w.f.Close()
+	os.Remove(w.f.Name())
+}
+
 type fsReader struct {
 	*os.File
 	size int64

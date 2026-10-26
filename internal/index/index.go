@@ -916,7 +916,7 @@ func (d *DB) queryRecords(ctx context.Context, q string, args ...any) ([]Record,
 	return out, rows.Err()
 }
 
-// Location is the new position of a record after packaging.
+// Location is the position of a record or a page's metadata record.
 type Location struct {
 	Location string
 	Offset   int64
@@ -924,57 +924,115 @@ type Location struct {
 	File     string
 }
 
-// Relocate updates record positions after an epoch is sealed. pages holds
-// new positions of page metadata records by metadata ID; files maps capture
-// file names to their names inside the package.
-func (d *DB) Relocate(ctx context.Context, locs, pages map[string]Location, files map[string]string) error {
-	return d.write(ctx, func(tx *sql.Tx) error {
-		ids := make([]string, 0, len(locs))
-		for id := range locs {
-			ids = append(ids, id)
-		}
-		for start := 0; start < len(ids); start += relocateBatch {
-			batch := ids[start:min(start+relocateBatch, len(ids))]
-			var where, file []string
-			var off, length []int64
-			for _, id := range batch {
-				l := locs[id]
-				where, off, length, file = append(where, l.Location), append(off, l.Offset), append(length, l.Length), append(file, l.File)
-			}
-			res, err := tx.ExecContext(ctx, `UPDATE records r SET location = u.location, "offset" = u.off, length = u.len,
-				file = coalesce(nullif(u.file, ''), r.file)
-				FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bigint[], $5::text[]) AS u(id, location, off, len, file)
-				WHERE r.record_id = u.id`, batch, where, off, length, file)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n != int64(len(batch)) {
-				return fmt.Errorf("index: relocate: %d of %d records unknown", int64(len(batch))-n, len(batch))
-			}
-		}
-		var ids2, where []string
-		var off, length []int64
-		for id, l := range pages {
-			ids2, where, off, length = append(ids2, id), append(where, l.Location), append(off, l.Offset), append(length, l.Length)
-		}
-		if len(ids2) > 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE pages p SET location = u.location, "offset" = u.off, length = u.len
-				FROM unnest($1::text[], $2::text[], $3::bigint[], $4::bigint[]) AS u(id, location, off, len)
-				WHERE p.metadata_id = u.id`, ids2, where, off, length); err != nil {
-				return err
-			}
-		}
-		for from, to := range files {
-			if _, err := tx.ExecContext(ctx, `UPDATE pages SET file = $1 WHERE file = $2`, to, from); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+// CaptureMove describes where a capture file went when its epoch was
+// packaged: its records and pages move from location From to the package,
+// their offsets grow by Shift and they belong to the package's WARC file
+// File.
+type CaptureMove struct {
+	From  string
+	Name  string // capture file name, the records' file before the move
+	Shift int64
+	File  string
 }
 
-// relocateBatch bounds the records moved by one statement.
-const relocateBatch = 10000
+// moveBatch bounds the capture files moved by one transaction, so that
+// captures of the current week are indexed in between.
+const moveBatch = 2000
+
+// RelocateCaptures moves the records and pages of capture files of an epoch
+// to the package at location. Rows already moved are left alone, so an
+// interrupted relocation can simply be run again. It fails when a record
+// of the epoch is still elsewhere afterwards.
+func (d *DB) RelocateCaptures(ctx context.Context, storage string, ep epoch.ID, location string, moves []CaptureMove) error {
+	st := StorageOr(storage)
+	for start := 0; start < len(moves); start += moveBatch {
+		batch := moves[start:min(start+moveBatch, len(moves))]
+		from, name, file := make([]string, len(batch)), make([]string, len(batch)), make([]string, len(batch))
+		shift := make([]int64, len(batch))
+		for i, m := range batch {
+			from[i], name[i], shift[i], file[i] = m.From, m.Name, m.Shift, m.File
+		}
+		err := d.write(ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE records r SET location = $3, "offset" = r."offset" + u.shift, file = u.file
+				FROM unnest($4::text[], $5::text[], $6::bigint[], $7::text[]) AS u(src, name, shift, file)
+				WHERE r.storage = $1 AND r.epoch = $2 AND r.file = u.name AND r.location = u.src`,
+				st, string(ep), location, from, name, shift, file); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE pages p SET location = $3, "offset" = p."offset" + u.shift, file = u.file
+				FROM unnest($4::text[], $5::bigint[], $6::text[]) AS u(src, shift, file)
+				WHERE p.storage = $1 AND p.epoch = $2 AND p.location = u.src`,
+				st, string(ep), location, from, shift, file)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("index: relocate: %w", err)
+		}
+	}
+	var n int64
+	var sample string
+	if err := d.db.QueryRowContext(ctx, `SELECT count(*), coalesce(min(location), '') FROM records
+		WHERE storage = $1 AND epoch = $2 AND location <> $3`, st, string(ep), location).Scan(&n, &sample); err != nil {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("index: relocate: %d record(s) of %s outside %s, e.g. in %s", n, ep, location, sample)
+	}
+	return nil
+}
+
+// RecordsByID returns the indexed records among ids.
+func (d *DB) RecordsByID(ctx context.Context, ids []string) (map[string]Record, error) {
+	recs, err := d.queryRecords(ctx, `SELECT `+recordCols+` FROM records WHERE record_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]Record, len(recs))
+	for _, r := range recs {
+		out[r.ID] = r
+	}
+	return out, nil
+}
+
+// PageLocations returns where the metadata records of pages are, by
+// metadata record ID.
+func (d *DB) PageLocations(ctx context.Context, metadataIDs []string) (map[string]Location, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT metadata_id, location, "offset", length, file FROM pages WHERE metadata_id = ANY($1)`, metadataIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Location{}
+	for rows.Next() {
+		var id string
+		var l Location
+		if err := rows.Scan(&id, &l.Location, &l.Offset, &l.Length, &l.File); err != nil {
+			return nil, err
+		}
+		out[id] = l
+	}
+	return out, rows.Err()
+}
+
+// EpochContents counts the records and pages of an epoch and those of them
+// that are not at location.
+type EpochContents struct {
+	Records, RecordsElsewhere int64
+	Pages, PagesElsewhere     int64
+}
+
+// Contents counts what the index holds for an epoch relative to location.
+func (d *DB) Contents(ctx context.Context, storage string, ep epoch.ID, location string) (EpochContents, error) {
+	var c EpochContents
+	st := StorageOr(storage)
+	if err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> $3) FROM records WHERE storage = $1 AND epoch = $2`,
+		st, string(ep), location).Scan(&c.Records, &c.RecordsElsewhere); err != nil {
+		return c, err
+	}
+	err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> $3) FROM pages WHERE storage = $1 AND epoch = $2`,
+		st, string(ep), location).Scan(&c.Pages, &c.PagesElsewhere)
+	return c, err
+}
 
 // AddRecords inserts records and pages of a sealed package directly.
 func (d *DB) AddRecords(ctx context.Context, recs []Record, pages []PageRow) error {

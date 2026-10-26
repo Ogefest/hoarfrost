@@ -76,6 +76,27 @@ catalog and checked by `hoarfrost verify`. Files of weeks sealed before a
 column was added lack it; DuckDB reads mixed files with
 `read_parquet('weekly/*/*.parquet', union_by_name = true)`.
 
+## Captures list
+
+Next to each package, `weekly/<year>/W<week>.captures.jsonl` lists the
+capture files it holds. The first line describes the package:
+
+```json
+{"format":"hoarfrost-captures-1","epoch":"2026-W41","package":"weekly/2026/W41.wacz","sha256":"…","size":…,"created":"…","warcFiles":…,"records":…,"indexed":…,"revisits":…,"pages":…,"cdxjLines":…,"captures":…}
+```
+
+Each further line is one capture file: its `incoming/` key, the WARC file of
+the package holding it (`file`), the absolute `offset` of its first byte in
+the package, its `size`, the `sha256` of its bytes taken when it was read
+from `incoming/`, and its counts of `records`, `indexed` records and
+`pages`. Verification checks every capture against it; it also proves that a
+file in `incoming/` was packaged before it is removed:
+
+```sh
+sha256sum incoming/2026/W41/<file>.warc.gz
+grep '<file>.warc.gz' W41.captures.jsonl
+```
+
 ## WACZ package
 
 ```

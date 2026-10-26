@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"sort"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/index"
+	"github.com/ogefest/hoarfrost/internal/storage"
 )
 
 // PageRow is one row of the weekly page table (weekly/<year>/W<week>.parquet):
@@ -65,61 +64,56 @@ func pageRow(p index.Page) PageRow {
 	return r
 }
 
-// writeParquet stores the page table of a sealed epoch from the index.
+// writeParquet streams the page table of a sealed epoch from the index to
+// storage, reading pages already sorted by URL and capture time.
 func (a *Archive) writeParquet(ctx context.Context, ep epoch.ID) (*ParquetInfo, error) {
-	pages, err := a.Index.EpochPages(ctx, a.name(), ep)
+	// A page table is far smaller than its package: small upload parts.
+	out, err := storage.Create(ctx, a.Storage, ep.ParquetKey(), 1<<30)
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]PageRow, len(pages))
-	for i, p := range pages {
-		rows[i] = pageRow(p)
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].URL != rows[j].URL {
-			return rows[i].URL < rows[j].URL
-		}
-		return rows[i].Captured.Before(rows[j].Captured)
-	})
-	if err := os.MkdirAll(a.SpoolDir, 0o755); err != nil {
-		return nil, err
-	}
-	f, err := os.CreateTemp(a.SpoolDir, "pages-"+string(ep)+"-*.parquet")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer out.Abort()
 	h := sha256.New()
-	w := parquet.NewGenericWriter[PageRow](io.MultiWriter(f, h),
+	w := parquet.NewGenericWriter[PageRow](io.MultiWriter(out, h),
 		parquet.Compression(&zstd.Codec{}),
 		parquet.MaxRowsPerRowGroup(parquetRowGroup),
 		parquet.SortingWriterConfig(parquet.SortingColumns(parquet.Ascending("url"), parquet.Ascending("captured"))),
 		parquet.BloomFilters(parquet.SplitBlockFilter(10, "url")),
 		parquet.KeyValueMetadata("hoarfrost.epoch", string(ep)),
 	)
-	for start := 0; start < len(rows); start += parquetRowGroup {
-		if _, err := w.Write(rows[start:min(start+parquetRowGroup, len(rows))]); err != nil {
-			return nil, err
+	rows := make([]PageRow, 0, parquetRowGroup)
+	total := 0
+	writeGroup := func() error {
+		if len(rows) == 0 {
+			return nil
 		}
-		if err := w.Flush(); err != nil {
-			return nil, err
+		if _, err := w.Write(rows); err != nil {
+			return err
 		}
+		total += len(rows)
+		rows = rows[:0]
+		return w.Flush()
+	}
+	err = a.Index.EachEpochPage(ctx, a.name(), ep, func(p index.Page) error {
+		if rows = append(rows, pageRow(p)); len(rows) == parquetRowGroup {
+			return writeGroup()
+		}
+		return nil
+	})
+	if err == nil {
+		err = writeGroup()
+	}
+	if err != nil {
+		return nil, err
 	}
 	if err := w.Close(); err != nil {
 		return nil, err
 	}
-	size, err := f.Seek(0, io.SeekCurrent)
+	size, err := out.Commit()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	if err := a.Storage.Put(ctx, ep.ParquetKey(), f, size); err != nil {
-		return nil, err
-	}
-	return &ParquetInfo{Key: ep.ParquetKey(), SHA256: hex.EncodeToString(h.Sum(nil)), Size: size, Rows: len(rows)}, nil
+	return &ParquetInfo{Key: ep.ParquetKey(), SHA256: hex.EncodeToString(h.Sum(nil)), Size: size, Rows: total}, nil
 }
 
 // WriteMissingParquet adds the page table to sealed epochs packaged before
@@ -184,10 +178,10 @@ func (a *Archive) verifyParquet(ctx context.Context, p *ParquetInfo, add func(p,
 	if sum := hex.EncodeToString(h.Sum(nil)); sum != p.SHA256 {
 		add(p.Key, "sha256 %s, catalog says %s", sum, p.SHA256)
 	}
-	rows, err := ReadPageTable(rd, rd.Size())
+	f, err := parquet.OpenFile(rd, rd.Size())
 	if err != nil {
 		add(p.Key, "unreadable: %v", err)
-	} else if len(rows) != p.Rows {
-		add(p.Key, "%d rows, catalog says %d", len(rows), p.Rows)
+	} else if f.NumRows() != int64(p.Rows) {
+		add(p.Key, "%d rows, catalog says %d", f.NumRows(), p.Rows)
 	}
 }

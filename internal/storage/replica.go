@@ -61,6 +61,32 @@ func (r *Replica) Put(ctx context.Context, key string, rd io.Reader, size int64)
 	return nil
 }
 
+func (r *Replica) Create(ctx context.Context, key string, sizeHint int64) (Writer, error) {
+	w, err := Create(ctx, r.Primary, key, sizeHint)
+	if err != nil {
+		return nil, err
+	}
+	return &replicaWriter{Writer: w, r: r, key: key}, nil
+}
+
+type replicaWriter struct {
+	Writer
+	r   *Replica
+	key string
+}
+
+func (w *replicaWriter) Commit() (int64, error) {
+	n, err := w.Writer.Commit()
+	if err == nil {
+		w.r.queue <- w.key
+	}
+	return n, err
+}
+
+func (r *Replica) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	return Stream(ctx, r.Primary, key)
+}
+
 func (r *Replica) Open(ctx context.Context, key string) (Reader, error) {
 	return r.Primary.Open(ctx, key)
 }

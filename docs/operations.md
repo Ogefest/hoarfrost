@@ -222,16 +222,52 @@ job is leased. After the week ends and `HOARFROST_SEAL_GRACE` (default 6h)
 passes, and no lease of the week is active, the coordinator:
 
 1. lists `incoming/<year>/W<week>/` and checks it against the index,
-2. builds `weekly/<year>/W<week>.wacz`, verifies it locally, uploads it,
-   writes the `.sha256` file and `catalog/<year>/W<week>.json`,
+2. streams `weekly/<year>/W<week>.wacz` to storage while building it (S3
+   multipart upload), then writes the `.sha256` file and the captures list
+   `weekly/<year>/W<week>.captures.jsonl`,
 3. moves index entries to absolute offsets inside the package,
-4. verifies the stored package and records the result in the catalog,
+4. writes the page table and `catalog/<year>/W<week>.json`, verifies the
+   stored package and records the result in the catalog,
 5. after `HOARFROST_INCOMING_RETENTION` (default 30 days) deletes the
-   packaged `incoming/` files (`hoarfrost cleanup` does the same on demand).
-   On S3 you may use a lifecycle rule on `incoming/` instead.
+   `incoming/` files of verified weeks that are on the captures list
+   (`hoarfrost cleanup` does the same on demand); other files, e.g. stored by
+   a worker whose completion came after the seal, stay and are logged. On S3
+   you may use a lifecycle rule on `incoming/` instead, but then files may go
+   before a failed week is sealed again.
 
-A late completion for a week that is being sealed is rejected and the job
-returns to the queue. Use `hoarfrost seal -epoch 2026-W41 -force` to seal a
+Sealing runs beside source polling, so a long seal does not stop captures.
+
+**Resources.** The package is never copied to local disk. The spool
+directory (`<HOARFROST_DATA_DIR>/spool/seal-<week>`) holds only the sorted
+index and page lines while a week is packaged, gzipped: a few percent of the
+week; it is emptied when the week is sealed again after a crash. Memory
+grows with the number of capture files and pages of the week (about a
+kilobyte each), not with its size or number of records; on S3 add three
+upload parts of at least 16 MiB (more for weeks over 140 GB, so that the
+package fits in 9000 parts). Keep the spool directory on disk, not on
+`tmpfs`, which is memory.
+
+**Verification** reads the package once and proves that every capture file
+of the week is in it byte for byte, every record is readable with valid
+digests and every indexed record is where the index says (see
+[architecture](architecture.md#verification)). Run it again with
+`hoarfrost verify -epoch 2026-W41` or *Verify* under System.
+
+**Failures.** Every attempt is recorded with the instance that made it, its
+phase and progress, and a heartbeat every 30 seconds. An attempt without
+heartbeat for 3 minutes was interrupted (the process ran out of memory,
+crashed or was restarted): its week is marked failed. Failed weeks are
+flagged on the dashboard and under System (*Sealing attempts*), reported by
+`hoarfrost_seal_errors` and the `HoarfrostSealFailed` alert, and sealed
+again automatically up to 3 times, an hour apart. A seal interrupted after
+the package was stored resumes from there; an earlier one starts over.
+After the third failure fix the cause and use *Seal now* or
+`hoarfrost seal -epoch 2026-W41`. A week whose package failed verification
+is not sealed again automatically; its catalog lists the problems.
+
+Only one process seals a week at a time: `hoarfrost seal` refuses a week
+the server is sealing (and the other way round). A late completion for a
+week that is being sealed is rejected and the job returns to the queue. Use `hoarfrost seal -epoch 2026-W41 -force` to seal a
 week manually (e.g. in tests).
 
 ## Database
@@ -352,9 +388,9 @@ warnings in the log (`source poll`, `seal`, `block lists`, `capture failed`).
 | `hoarfrost_fallbacks_total` | `source` | captures repeated with the fallback engine because the text was too short (also a hint of consent walls and paywalls) |
 | `hoarfrost_queue_jobs` | `state` | jobs by state: `queued`, `leased`, `done`, `failed` |
 | `hoarfrost_workers` | | workers seen in the last hour |
-| `hoarfrost_epochs` | `storage`, `state` | weeks by state: `open`, `sealing`, `sealed`, `verified`, `failed` (verification failed) |
+| `hoarfrost_epochs` | `storage`, `state` | weeks by state: `open`, `sealing`, `seal_failed` (sealing failed or was interrupted, no package yet), `sealed`, `verified`, `failed` (verification failed) |
 | `hoarfrost_oldest_unsealed_epoch_end_timestamp_seconds` | `storage` | end of the oldest week that is not sealed yet |
-| `hoarfrost_seal_errors` | `storage` | weeks whose last sealing attempt failed |
+| `hoarfrost_seal_errors` | `storage` | weeks whose last sealing attempt failed or was interrupted (kept across restarts until the week is sealed) |
 | `hoarfrost_blocklist_failing` | `list` | 1 when the last refresh of a block list failed |
 | `hoarfrost_records_total`, `hoarfrost_capture_bytes_total`, `hoarfrost_archive_bytes`, `hoarfrost_pages`, `hoarfrost_revisit_records`, `hoarfrost_dedup_saved_bytes`, `hoarfrost_blocklist_rules` | | volume and deduplication |
 
@@ -399,7 +435,7 @@ unit-tested in CI with `promtool test rules deploy/alerts_test.yml`:
 | `HoarfrostNoCaptures` | jobs are queued but nothing was captured for 3 hours |
 | `HoarfrostQueueGrowing` | more than 1000 queued jobs and still growing |
 | `HoarfrostNoWorkers` | no worker contacted the coordinator for 15 minutes |
-| `HoarfrostSealFailed` | sealing a week failed |
+| `HoarfrostSealFailed` | sealing a week failed or was interrupted (e.g. out of memory) |
 | `HoarfrostVerificationFailed` | a weekly package failed verification |
 | `HoarfrostWeekNotSealed` | a week ended over a day ago and is still open |
 | `HoarfrostBlocklistFailing` | a block list could not be refreshed for a day |

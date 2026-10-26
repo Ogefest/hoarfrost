@@ -199,10 +199,40 @@ type Problem struct {
 	Message string `json:"message"`
 }
 
+// EntrySum is the SHA-256 (hex) and size of an entry's data.
+type EntrySum struct {
+	SHA256 string
+	Size   int64
+}
+
 // Verify checks that every entry is stored, that datapackage.json lists
 // every resource with a matching SHA-256 and size, and that the digest file
-// matches datapackage.json.
+// matches datapackage.json. It reads every entry; CheckSums does the same
+// with digests computed elsewhere.
 func (r *Reader) Verify() []Problem {
+	var probs []Problem
+	sums := map[string]EntrySum{}
+	for _, f := range r.zr.File {
+		sec, err := r.Entry(f.Name)
+		if err != nil {
+			continue // reported by CheckSums
+		}
+		h := sha256.New()
+		n, err := io.Copy(h, sec)
+		if err != nil {
+			probs = append(probs, Problem{f.Name, fmt.Sprintf("read: %v", err)})
+			continue
+		}
+		sums[f.Name] = EntrySum{hex.EncodeToString(h.Sum(nil)), n}
+	}
+	return append(probs, r.CheckSums(sums)...)
+}
+
+// CheckSums checks the package structure against the digests of its
+// entries: every entry stored, datapackage.json listing every resource with
+// a matching SHA-256 and size, and the digest file matching
+// datapackage.json.
+func (r *Reader) CheckSums(sums map[string]EntrySum) []Problem {
 	var probs []Problem
 	add := func(p, f string, args ...any) { probs = append(probs, Problem{p, fmt.Sprintf(f, args...)}) }
 	for _, f := range r.zr.File {
@@ -223,25 +253,31 @@ func (r *Reader) Verify() []Problem {
 	if dp.WACZVersion == "" {
 		add(PathDatapackage, "missing wacz_version")
 	}
+	entries := make(map[string]*zip.File, len(r.zr.File))
+	for _, f := range r.zr.File {
+		entries[f.Name] = f
+	}
 	listed := map[string]bool{PathDatapackage: true, PathDigest: true}
 	for _, res := range dp.Resources {
 		listed[res.Path] = true
-		sec, err := r.Entry(res.Path)
-		if err != nil {
-			add(res.Path, "%v", err)
+		f, ok := entries[res.Path]
+		if !ok {
+			add(res.Path, "wacz: entry %s not found", res.Path)
 			continue
 		}
-		h := sha256.New()
-		n, err := io.Copy(h, sec)
-		if err != nil {
-			add(res.Path, "read: %v", err)
+		if f.Method != zip.Store {
 			continue
 		}
-		if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != res.Hash {
+		sum, ok := sums[res.Path]
+		if !ok {
+			add(res.Path, "entry was not read")
+			continue
+		}
+		if got := "sha256:" + sum.SHA256; got != res.Hash {
 			add(res.Path, "hash mismatch: %s, datapackage says %s", got, res.Hash)
 		}
-		if n != res.Bytes {
-			add(res.Path, "size %d, datapackage says %d", n, res.Bytes)
+		if sum.Size != res.Bytes {
+			add(res.Path, "size %d, datapackage says %d", sum.Size, res.Bytes)
 		}
 	}
 	for _, f := range r.zr.File {

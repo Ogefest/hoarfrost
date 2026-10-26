@@ -3,6 +3,8 @@ package storage_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -175,5 +177,75 @@ func TestS3SingleRangeRead(t *testing.T) {
 	r.ReadAt(buf[:1000], off+10)
 	if ct.gets != 1 {
 		t.Fatal("cached read hit the network")
+	}
+}
+
+// breakingTransport cuts the body of the first GET responses short, like a
+// dropped connection.
+type breakingTransport struct {
+	mu     sync.Mutex
+	breaks int
+}
+
+func (b *breakingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(r)
+	if err != nil || r.Method != http.MethodGet || r.URL.Query().Has("location") {
+		return resp, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.breaks > 0 {
+		b.breaks--
+		resp.Body = &cutBody{rc: resp.Body, left: 300 << 10}
+	}
+	return resp, nil
+}
+
+type cutBody struct {
+	rc   io.ReadCloser
+	left int
+}
+
+func (c *cutBody) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		return 0, errors.New("connection reset by peer")
+	}
+	n, err := c.rc.Read(p[:min(len(p), c.left)])
+	c.left -= n
+	return n, err
+}
+
+func (c *cutBody) Close() error { return c.rc.Close() }
+
+func TestS3StreamResumes(t *testing.T) {
+	backend := s3mem.New()
+	srv := httptest.NewServer(gofakes3.New(backend).Server())
+	t.Cleanup(srv.Close)
+	backend.CreateBucket("archive")
+	u, _ := url.Parse(srv.URL)
+	tr := &breakingTransport{}
+	s, err := storage.NewS3(context.Background(), storage.S3Config{
+		Endpoint: u.Host, Bucket: "archive", Region: "us-east-1", AccessKey: "key", SecretKey: "secret", PathStyle: true, Transport: tr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("0123456789abcdef"), 1<<16)
+	if err := storage.PutBytes(ctx, s, "weekly/2026/W41.wacz", data); err != nil {
+		t.Fatal(err)
+	}
+	tr.breaks = 2
+	rc, _, err := storage.Stream(ctx, s, "weekly/2026/W41.wacz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read %d of %d bytes: %v", len(got), len(data), err)
+	}
+	if tr.breaks != 0 {
+		t.Fatalf("%d breaks left", tr.breaks)
 	}
 }

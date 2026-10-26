@@ -86,9 +86,9 @@ var (
 	descSrcFailing   = prometheus.NewDesc("hoarfrost_source_failing", "1 when the last poll of an enabled source reported an error.", []string{"source"}, nil)
 	descSrcFound     = prometheus.NewDesc("hoarfrost_source_urls_found", "URLs found in the feeds and sitemaps of an enabled source by its last poll.", []string{"source"}, nil)
 	descSrcInterval  = prometheus.NewDesc("hoarfrost_source_poll_interval_seconds", "Poll interval of an enabled source.", []string{"source"}, nil)
-	descEpochStates  = prometheus.NewDesc("hoarfrost_epochs", "Weeks by state (open, sealing, sealed, verified, failed).", []string{"storage", "state"}, nil)
+	descEpochStates  = prometheus.NewDesc("hoarfrost_epochs", "Weeks by state (open, sealing, seal_failed, sealed, verified, failed: the package failed verification).", []string{"storage", "state"}, nil)
 	descOldestOpen   = prometheus.NewDesc("hoarfrost_oldest_unsealed_epoch_end_timestamp_seconds", "End of the oldest week of a storage that is not sealed yet.", []string{"storage"}, nil)
-	descSealErrors   = prometheus.NewDesc("hoarfrost_seal_errors", "Weeks whose last sealing attempt failed.", []string{"storage"}, nil)
+	descSealErrors   = prometheus.NewDesc("hoarfrost_seal_errors", "Weeks whose last sealing attempt failed or was interrupted (kept across restarts until the week is sealed).", []string{"storage"}, nil)
 )
 
 type stateCollector struct{ c *Coordinator }
@@ -162,8 +162,12 @@ func (s *stateCollector) collectEpochs(ctx context.Context, ch chan<- prometheus
 	counts := map[key]int{}
 	oldest := map[string]time.Time{}
 	for _, e := range eps {
-		counts[key{e.Storage, e.State}]++
-		if e.State == index.StateOpen || e.State == index.StateSealing {
+		state := e.State
+		if state == index.StateFailed && e.WACZKey == "" {
+			state = "seal_failed" // sealing failed; "failed" is a package that failed verification
+		}
+		counts[key{e.Storage, state}]++
+		if state == index.StateOpen || state == index.StateSealing || state == "seal_failed" {
 			if end := e.Epoch.End(); oldest[e.Storage].IsZero() || end.Before(oldest[e.Storage]) {
 				oldest[e.Storage] = end
 			}
@@ -179,7 +183,7 @@ func (s *stateCollector) collectEpochs(ctx context.Context, ch chan<- prometheus
 	for _, name := range s.c.Storages() {
 		sealErrs[index.StorageOr(name)] = 0
 	}
-	for k := range s.c.SealErrors() {
+	for k := range s.c.SealErrors(ctx) {
 		storage, _, _ := strings.Cut(k, "/")
 		sealErrs[storage]++
 	}

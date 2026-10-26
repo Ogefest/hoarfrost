@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/ogefest/hoarfrost/internal/pgdb/pgtest"
 
+	"github.com/johannesboyne/gofakes3"
+	"github.com/johannesboyne/gofakes3/backend/s3mem"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ogefest/hoarfrost/internal/archive"
@@ -130,8 +134,13 @@ func TestSealVerifyAndRead(t *testing.T) {
 		t.Fatalf("sha256 file %q", sumFile)
 	}
 	stored, err := e.arc.ReadCatalog(ctx, ep)
-	if err != nil || stored.State != index.StateVerified || len(stored.Incoming) != 3 {
+	if err != nil || stored.State != index.StateVerified || stored.Captures != 3 || stored.Manifest != "weekly/2026/W41.captures.jsonl" ||
+		stored.Verification.Captures != 3 || stored.Verification.Records != stored.Records || stored.Verification.Scanned <= stored.Records {
 		t.Fatalf("stored catalog %+v %v", stored, err)
+	}
+	m, err := e.arc.ReadManifest(ctx, ep)
+	if err != nil || len(m.Captures) != 3 || m.SHA256 != cat.SHA256 || m.Indexed != cat.Records || m.Pages != 3 {
+		t.Fatalf("captures list %+v %v", m, err)
 	}
 	info, _ := e.idx.Epoch(ctx, "", ep)
 	if info.State != index.StateVerified || info.SHA256 != cat.SHA256 {
@@ -315,6 +324,9 @@ func TestVerifyDetectsBitRot(t *testing.T) {
 	if v.OK || len(v.Problems) < 2 {
 		t.Fatalf("expected sha and record problems: %+v", v)
 	}
+	for _, p := range v.Problems {
+		t.Logf("%s: %s", p.Path, p.Message)
+	}
 }
 
 func TestCleanupAfterRetention(t *testing.T) {
@@ -394,7 +406,8 @@ func TestSealIncludesUnindexedCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cat.Pages != 1 || cat.Incoming[0] != cf.Key() {
+	m, _ := e.arc.ReadManifest(context.Background(), ep)
+	if cat.Pages != 1 || cat.State != index.StateVerified || m.Captures[0].Key != cf.Key() {
 		t.Fatalf("catalog %+v", cat)
 	}
 }
@@ -513,5 +526,260 @@ func TestSealWritesPageTable(t *testing.T) {
 	}
 	if done, _ := e.arc.WriteMissingParquet(ctx); len(done) != 0 {
 		t.Fatalf("rewrote %v", done)
+	}
+}
+
+// flakyStore fails the first write of keys with the given suffixes, like a
+// process stopped at that step of sealing, and counts package uploads.
+type flakyStore struct {
+	storage.Storage
+	fail     map[string]bool
+	failRead map[string]bool
+	packages int
+}
+
+func (f *flakyStore) Open(ctx context.Context, key string) (storage.Reader, error) {
+	for suffix := range f.failRead {
+		if strings.HasSuffix(key, suffix) {
+			delete(f.failRead, suffix)
+			return nil, errors.New("connection reset")
+		}
+	}
+	return f.Storage.Open(ctx, key)
+}
+
+func (f *flakyStore) failing(key string) bool {
+	for suffix := range f.fail {
+		if strings.HasSuffix(key, suffix) {
+			delete(f.fail, suffix)
+			return true
+		}
+	}
+	return false
+}
+
+func (f *flakyStore) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	if f.failing(key) {
+		return errors.New("killed")
+	}
+	return f.Storage.Put(ctx, key, r, size)
+}
+
+func (f *flakyStore) Create(ctx context.Context, key string, hint int64) (storage.Writer, error) {
+	if f.failing(key) {
+		return nil, errors.New("killed")
+	}
+	if strings.HasSuffix(key, ".wacz") {
+		f.packages++
+	}
+	return storage.Create(ctx, f.Storage, key, hint)
+}
+
+// TestSealResumesAfterPackageStored: a seal stopped after the package and
+// its captures list were stored (here: writing the page table) continues
+// from there without packaging again.
+func TestSealResumesAfterPackageStored(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	flaky := &flakyStore{Storage: e.store, fail: map[string]bool{".parquet": true}}
+	e.arc.Storage = flaky
+	if _, err := e.arc.Seal(ctx, ep); err == nil {
+		t.Fatal("seal should fail")
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateFailed || !strings.Contains(info.Error, "killed") {
+		t.Fatalf("epoch %+v", info)
+	}
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flaky.packages != 1 || cat.State != index.StateVerified || cat.Pages != 3 {
+		t.Fatalf("packages built %d, catalog %+v", flaky.packages, cat)
+	}
+}
+
+// TestSealStartsOverWithoutCapturesList: a package stored without its
+// captures list cannot be trusted and is built again.
+func TestSealStartsOverWithoutCapturesList(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	flaky := &flakyStore{Storage: e.store, fail: map[string]bool{".captures.jsonl": true}}
+	e.arc.Storage = flaky
+	if _, err := e.arc.Seal(ctx, ep); err == nil {
+		t.Fatal("seal should fail")
+	}
+	if _, err := e.store.Stat(ctx, ep.WeeklyKey()); err != nil {
+		t.Fatalf("package of the failed seal: %v", err)
+	}
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flaky.packages != 2 || cat.State != index.StateVerified {
+		t.Fatalf("packages built %d, catalog %+v", flaky.packages, cat)
+	}
+}
+
+// TestVerifyFindsCaptureMissingFromPackage: a capture the index knows of
+// the week but which is not in the package fails verification.
+func TestVerifyFindsCaptureMissingFromPackage(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	if _, err := e.arc.Seal(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	lost := recorder.CaptureFile{Name: "20261012T080000Z-serwis_a-lost.warc.gz", Size: 1000, Epoch: ep,
+		Records: []recorder.RecordInfo{{ID: "<urn:uuid:lost>", Type: warcio.TypeResponse, URI: "https://lost.example/", Date: e.arc.Now(), Offset: 0, Length: 1000}}}
+	if err := e.idx.AddCapture(ctx, lost, lost.Key()); err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.arc.Verify(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msgs []string
+	for _, p := range v.Problems {
+		msgs = append(msgs, p.Message)
+	}
+	all := strings.Join(msgs, "\n")
+	if v.OK || !strings.Contains(all, "capture "+lost.Name+" of the week is not in the package") ||
+		!strings.Contains(all, "1 indexed record(s) of the week are not in the package") {
+		t.Fatalf("problems:\n%s", all)
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateFailed || !strings.Contains(info.Error, "more problems") {
+		t.Fatalf("epoch %+v", info)
+	}
+}
+
+// TestSealToS3 seals into an S3 bucket: the package is uploaded in parts
+// while it is built and verified by reading it back.
+func TestSealToS3(t *testing.T) {
+	e := newEnv(t)
+	backend := s3mem.New()
+	srv := httptest.NewServer(gofakes3.New(backend).Server())
+	t.Cleanup(srv.Close)
+	backend.CreateBucket("archive")
+	u, _ := url.Parse(srv.URL)
+	s3, err := storage.NewS3(context.Background(), storage.S3Config{Endpoint: u.Host, Bucket: "archive", Prefix: "press",
+		Region: "us-east-1", AccessKey: "key", SecretKey: "secret", PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.store = s3
+	e.arc.Storage = s3
+	e.populate()
+	ctx := context.Background()
+	var phases []string
+	cat, err := e.arc.SealWith(ctx, ep, archive.SealOptions{Progress: func(phase string, done, total int64) {
+		if len(phases) == 0 || phases[len(phases)-1] != phase {
+			phases = append(phases, phase)
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.State != index.StateVerified || cat.Captures != 3 {
+		t.Fatalf("catalog %+v", cat)
+	}
+	want := []string{archive.PhasePackaging, archive.PhaseRelocating, archive.PhasePageTable, archive.PhaseVerifying}
+	if strings.Join(phases, ",") != strings.Join(want, ",") {
+		t.Fatalf("phases %v", phases)
+	}
+	page, _ := e.idx.Closest(ctx, e.site.URL+"/news/article2.html", time.Time{})
+	if res, err := e.arc.Fetch(ctx, page); err != nil || !bytes.Contains(res.Body, []byte("Nowa linia tramwajowa")) {
+		t.Fatalf("fetch from S3 package: %v", err)
+	}
+}
+
+// TestVerifyAfterReindex: an index rebuilt from the package (without the
+// capture files of the week) still verifies.
+func TestVerifyAfterReindex(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	if _, err := e.arc.Seal(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	e.arc.Close()
+	e.idx.Close()
+	e.openIndex()
+	if _, err := e.arc.Reindex(ctx, archive.ReindexOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.arc.Verify(ctx, ep)
+	if err != nil || !v.OK || v.Captures != 3 {
+		t.Fatalf("verification after reindex: %+v %v", v, err)
+	}
+}
+
+// TestSealKeepsPackageOnReadError: a transient error reading the captures
+// list of a stored package (which the index may already point to) fails
+// the attempt instead of replacing the package.
+func TestSealKeepsPackageOnReadError(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	flaky := &flakyStore{Storage: e.store, fail: map[string]bool{".parquet": true}, failRead: map[string]bool{}}
+	e.arc.Storage = flaky
+	if _, err := e.arc.Seal(ctx, ep); err == nil {
+		t.Fatal("seal should fail")
+	}
+	flaky.failRead[".captures.jsonl"] = true
+	if _, err := e.arc.Seal(ctx, ep); err == nil || !strings.Contains(err.Error(), "connection reset") {
+		t.Fatalf("seal with unreadable captures list: %v", err)
+	}
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil || flaky.packages != 1 || cat.State != index.StateVerified {
+		t.Fatalf("packages built %d, %+v %v", flaky.packages, cat, err)
+	}
+}
+
+// TestSealOfSealedWeek: sealing a sealed week again keeps its state, and a
+// package whose catalog was written by a process stopped before
+// verification is verified.
+func TestSealOfSealedWeek(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateSealing})
+	if _, err := e.arc.Seal(ctx, ep); !errors.Is(err, archive.ErrAlreadySealed) {
+		t.Fatal(err)
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateVerified || info.WACZKey != cat.Package || info.SHA256 != cat.SHA256 {
+		t.Fatalf("state not restored: %+v", info)
+	}
+	cat.Verification, cat.State = nil, index.StateSealed
+	e.arc.WriteCatalog(ctx, cat)
+	got, err := e.arc.Seal(ctx, ep)
+	if err != nil || got.State != index.StateVerified || got.Verification == nil {
+		t.Fatalf("unverified catalog: %+v %v", got, err)
+	}
+}
+
+// TestCleanupKeepsUnpackagedFiles: only capture files on the captures list
+// are removed from incoming/.
+func TestCleanupKeepsUnpackagedFiles(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	if _, err := e.arc.Seal(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	late := ep.IncomingPrefix() + "20261012T080000Z-serwis_a-late.warc.gz"
+	storage.PutBytes(ctx, e.store, late, []byte("late"))
+	e.arc.Now = func() time.Time { return time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC) }
+	if n, err := e.arc.Cleanup(ctx); err != nil || n != 3 {
+		t.Fatalf("cleanup %d %v", n, err)
+	}
+	left, _ := e.store.List(ctx, ep.IncomingPrefix())
+	if len(left) != 1 || left[0].Key != late {
+		t.Fatalf("left %+v", left)
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
 	"github.com/ogefest/hoarfrost/internal/recorder"
+	"github.com/ogefest/hoarfrost/internal/sealrun"
 	"github.com/ogefest/hoarfrost/internal/sources"
 	"github.com/ogefest/hoarfrost/internal/sourcestore"
 	"github.com/ogefest/hoarfrost/internal/storage"
@@ -51,6 +52,19 @@ type Options struct {
 	Log           *slog.Logger
 	// BlocklistDir caches downloaded block lists (default: next to the spool).
 	BlocklistDir string
+	// SealRuns records seal attempts (default: in the queue's database).
+	SealRuns *sealrun.Store
+	// Host names this instance in seal attempts (default: the hostname).
+	Host string
+	// SealAttempts bounds automatic attempts to seal a week that failed
+	// (default 3); SealRetry is the pause between them (default 1h).
+	SealAttempts int
+	SealRetry    time.Duration
+	// SealHeartbeat is how often a running seal shows it is alive (default
+	// 30s); a seal without heartbeat for SealStale (default 3m) was
+	// interrupted.
+	SealHeartbeat time.Duration
+	SealStale     time.Duration
 }
 
 // SourceStatus is the result of the last poll of a source.
@@ -82,10 +96,11 @@ type Coordinator struct {
 	blocks  atomic.Pointer[blocklist.Updater]
 
 	epochMu sync.Mutex
+	runs    *sealrun.Store
 
 	mu      sync.Mutex
 	workers map[string]*WorkerStatus
-	sealErr map[string]string
+	sealing map[sealrun.Key]bool // weeks this process is sealing
 }
 
 // New creates a coordinator and loads the capture configuration.
@@ -99,10 +114,32 @@ func New(o Options) (*Coordinator, error) {
 	if o.Fetcher == nil {
 		o.Fetcher = sources.NewFetcher("")
 	}
+	ownRuns := o.SealRuns == nil
+	if ownRuns {
+		o.SealRuns = sealrun.New(o.Queue.DB())
+	}
+	if o.Host == "" {
+		o.Host, _ = os.Hostname()
+	}
+	if o.SealAttempts == 0 {
+		o.SealAttempts = 3
+	}
+	if o.SealRetry == 0 {
+		o.SealRetry = time.Hour
+	}
+	if o.SealHeartbeat == 0 {
+		o.SealHeartbeat = 30 * time.Second
+	}
+	if o.SealStale == 0 {
+		o.SealStale = 3 * time.Minute
+	}
 	c := &Coordinator{
 		lib: o.Library, idx: o.Library.Index, queue: o.Queue, fetcher: o.Fetcher,
 		log: o.Log, opts: o, Now: time.Now, workers: map[string]*WorkerStatus{},
-		sealErr: map[string]string{},
+		runs: o.SealRuns, sealing: map[sealrun.Key]bool{},
+	}
+	if ownRuns {
+		o.SealRuns.Now = func() time.Time { return c.Now() }
 	}
 	c.Metrics = newMetrics(c)
 	if o.BlocklistDir == "" {
@@ -706,14 +743,36 @@ func (c *Coordinator) SnapshotSources(ctx context.Context) error {
 // ErrActiveLeases is returned when an epoch still has captures running.
 var ErrActiveLeases = errors.New("coordinator: epoch has active leases")
 
+// ErrSealing is returned when the week is already being sealed.
+var ErrSealing = errors.New("coordinator: week is already being sealed")
+
+// interruptedReason explains a seal whose process stopped.
+const interruptedReason = "sealing was interrupted: the process stopped (out of memory, crash or restart)"
+
 // Seal closes an epoch of a storage. Unless force is set it refuses while
-// leases of the epoch are active.
+// leases of the epoch are active. Every attempt is recorded (see sealrun)
+// with its progress and a heartbeat, so that a failure, or a process killed
+// while sealing, stays visible after a restart.
 func (c *Coordinator) Seal(ctx context.Context, storageName string, ep epoch.ID, force bool) (*archive.Catalog, error) {
 	arc, err := c.lib.Archive(storageName)
 	if err != nil {
 		return nil, err
 	}
 	storageName = index.StorageOr(storageName)
+	key := sealrun.Key{Storage: storageName, Epoch: ep}
+	c.mu.Lock()
+	if c.sealing[key] {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s/%s", ErrSealing, storageName, ep)
+	}
+	c.sealing[key] = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.sealing, key)
+		c.mu.Unlock()
+	}()
+
 	c.epochMu.Lock()
 	n, err := c.queue.ActiveLeases(ctx, storageName, ep)
 	if err != nil {
@@ -724,41 +783,215 @@ func (c *Coordinator) Seal(ctx context.Context, storageName string, ep epoch.ID,
 		c.epochMu.Unlock()
 		return nil, fmt.Errorf("%w: %d", ErrActiveLeases, n)
 	}
-	if err := c.idx.SetEpoch(ctx, index.EpochInfo{Storage: storageName, Epoch: ep, State: index.StateSealing}); err != nil {
+	// The run is recorded before the week turns "sealing", so that no
+	// other process takes it for an interrupted seal, and only if no
+	// other process (e.g. "hoarfrost seal" beside the server) is sealing it.
+	runID, err := c.runs.Start(ctx, storageName, ep, c.opts.Host, c.Now().Add(-c.opts.SealStale))
+	if err != nil {
 		c.epochMu.Unlock()
-		return nil, err
+		if errors.Is(err, sealrun.ErrRunning) {
+			return nil, fmt.Errorf("%w: %s/%s (by another process)", ErrSealing, storageName, ep)
+		}
+		return nil, fmt.Errorf("coordinator: recording seal attempt: %w", err)
+	}
+	// A week with a catalog keeps its state; SealWith restores it from
+	// the catalog or finishes verification.
+	if _, err := arc.ReadCatalog(ctx, ep); err != nil {
+		if err := c.idx.SetEpoch(ctx, index.EpochInfo{Storage: storageName, Epoch: ep, State: index.StateSealing}); err != nil {
+			c.epochMu.Unlock()
+			c.finishRun(ctx, runID, err)
+			return nil, err
+		}
 	}
 	c.epochMu.Unlock()
-	cat, err := arc.Seal(ctx, ep)
-	key := storageName + "/" + string(ep)
-	c.mu.Lock()
-	if err != nil {
-		c.sealErr[key] = err.Error()
-	} else {
-		delete(c.sealErr, key)
+
+	stop := c.heartbeat(runID)
+	cat, err := arc.SealWith(ctx, ep, archive.SealOptions{Progress: c.progress(runID)})
+	stop()
+	runErr := err
+	if err == nil && cat.Verification != nil && !cat.Verification.OK {
+		p := cat.Verification.Problems[0]
+		runErr = fmt.Errorf("verification found %d problem(s), first: %s: %s", len(cat.Verification.Problems)+cat.Verification.MoreProblems, p.Path, p.Message)
 	}
-	c.mu.Unlock()
+	c.finishRun(ctx, runID, runErr)
 	return cat, err
 }
 
-// SealDue seals every open epoch whose week ended more than the grace
-// period ago and has no active leases.
-func (c *Coordinator) SealDue(ctx context.Context) error {
+func (c *Coordinator) finishRun(ctx context.Context, id int64, err error) {
+	if errors.Is(err, archive.ErrAlreadySealed) {
+		err = nil // nothing to do is not a failure
+	}
+	if ferr := c.runs.Finish(context.WithoutCancel(ctx), id, err); ferr != nil {
+		c.log.Warn("recording seal outcome", "run", id, "err", ferr)
+	}
+}
+
+// heartbeat marks the run alive until the returned function is called.
+func (c *Coordinator) heartbeat(id int64) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(c.opts.SealHeartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := c.runs.Beat(context.Background(), id); err != nil {
+					c.log.Warn("seal heartbeat", "run", id, "err", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
+}
+
+// progress records the phase of a run: at every change of phase and at
+// most every 10 seconds within one.
+func (c *Coordinator) progress(id int64) func(phase string, done, total int64) {
+	var last string
+	var at time.Time
+	return func(phase string, done, total int64) {
+		if phase == last && c.Now().Sub(at) < 10*time.Second {
+			return
+		}
+		if phase != last {
+			c.log.Info("sealing", "run", id, "phase", phase, "total", total)
+		}
+		last, at = phase, c.Now()
+		if err := c.runs.Progress(context.Background(), id, phase, done, total); err != nil {
+			c.log.Warn("recording seal progress", "run", id, "err", err)
+		}
+	}
+}
+
+// RecoverInterrupted ends seal attempts whose process stopped (no heartbeat
+// for SealStale) and fails weeks such a process left "sealing", so that
+// they are shown under System, alerted on and retried.
+func (c *Coordinator) RecoverInterrupted(ctx context.Context) error {
+	stale := c.Now().Add(-c.opts.SealStale)
+	ended, err := c.runs.Interrupt(ctx, stale, interruptedReason)
+	if err != nil {
+		return err
+	}
+	byWeek := map[sealrun.Key]sealrun.Run{}
+	for _, r := range ended {
+		c.log.Error("seal interrupted", "storage", r.Storage, "epoch", r.Epoch, "host", r.Host, "phase", r.Phase,
+			"done", r.Done, "total", r.Total, "lastHeartbeat", r.Heartbeat)
+		byWeek[sealrun.Key{Storage: r.Storage, Epoch: r.Epoch}] = r
+	}
 	eps, err := c.idx.Epochs(ctx)
 	if err != nil {
 		return err
 	}
-	now := c.Now()
-	var errs []error
 	for _, e := range eps {
-		if e.State != index.StateOpen || now.Before(e.Epoch.End().Add(c.opts.SealGrace)) {
+		if e.State != index.StateSealing {
 			continue
 		}
-		if _, err := c.Seal(ctx, e.Storage, e.Epoch, false); err != nil && !errors.Is(err, ErrActiveLeases) {
+		key := sealrun.Key{Storage: e.Storage, Epoch: e.Epoch}
+		c.mu.Lock()
+		mine := c.sealing[key]
+		c.mu.Unlock()
+		if mine {
+			continue
+		}
+		if alive, err := c.runs.Alive(ctx, e.Storage, e.Epoch, stale); err != nil || alive {
+			continue
+		}
+		msg := interruptedReason
+		if r, ok := byWeek[key]; ok {
+			msg = r.Error
+		} else if err := c.runs.Record(ctx, e.Storage, e.Epoch, c.opts.Host, sealrun.OutcomeInterrupted, msg); err != nil {
+			return err
+		}
+		c.log.Error("week left sealing by a stopped process", "storage", e.Storage, "epoch", e.Epoch)
+		e.State, e.Error = index.StateFailed, msg
+		if err := c.idx.SetEpoch(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SealDue seals every open epoch whose week ended more than the grace
+// period ago and has no active leases, and tries again weeks whose seal
+// failed (up to SealAttempts, every SealRetry).
+func (c *Coordinator) SealDue(ctx context.Context) error {
+	var errs []error
+	if err := c.RecoverInterrupted(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	eps, err := c.idx.Epochs(ctx)
+	if err != nil {
+		return err
+	}
+	failures, err := c.runs.Failures(ctx)
+	if err != nil {
+		return err
+	}
+	now := c.Now()
+	for _, e := range eps {
+		if now.Before(e.Epoch.End().Add(c.opts.SealGrace)) {
+			continue
+		}
+		switch {
+		case e.State == index.StateOpen:
+			// A week without captures (all removed) has nothing to seal.
+			if files, err := c.idx.Files(ctx, e.Storage, e.Epoch); err != nil || len(files) == 0 {
+				continue
+			}
+		case e.State == index.StateFailed && e.WACZKey == "":
+			// Sealing failed before a package was verified; a failed
+			// verification needs a person.
+			f := failures[sealrun.Key{Storage: e.Storage, Epoch: e.Epoch}]
+			if f.Attempts >= c.opts.SealAttempts || now.Sub(f.Last.Finished) < c.opts.SealRetry {
+				continue
+			}
+			c.log.Warn("retrying seal", "storage", e.Storage, "epoch", e.Epoch, "attempt", f.Attempts+1, "lastError", e.Error)
+		default:
+			continue
+		}
+		if _, err := c.Seal(ctx, e.Storage, e.Epoch, false); err != nil && !errors.Is(err, ErrActiveLeases) && !errors.Is(err, ErrSealing) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// SealFailures returns the weeks whose latest seal attempt failed or was
+// interrupted and which are not sealed since (e.g. by a person verifying the
+// package again), with the attempts made since their last success.
+func (c *Coordinator) SealFailures(ctx context.Context) (map[sealrun.Key]sealrun.Failure, error) {
+	f, err := c.runs.Failures(ctx)
+	if err != nil || len(f) == 0 {
+		return f, err
+	}
+	eps, err := c.idx.Epochs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range eps {
+		if e.State == index.StateSealed || e.State == index.StateVerified {
+			delete(f, sealrun.Key{Storage: e.Storage, Epoch: e.Epoch})
+		}
+	}
+	return f, nil
+}
+
+// SealRuns lists the latest seal attempts, newest first.
+func (c *Coordinator) SealRuns(ctx context.Context, limit int) ([]sealrun.Run, error) {
+	return c.runs.Recent(ctx, limit)
+}
+
+// SealPolicy returns how often a failed seal is tried automatically and how
+// long the coordinator waits between attempts.
+func (c *Coordinator) SealPolicy() (attempts int, retry time.Duration) {
+	return c.opts.SealAttempts, c.opts.SealRetry
 }
 
 // Start prepares storage and the index: README, configuration snapshot and
@@ -806,12 +1039,19 @@ func (c *Coordinator) writeMissingIndexes(ctx context.Context) {
 	}
 }
 
-// Run executes periodic tasks until ctx is cancelled.
+// Run executes periodic tasks until ctx is cancelled. Sealing runs on its
+// own, so that sealing a large week does not hold up polling of sources.
 func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 	if tick == 0 {
 		tick = 30 * time.Second
 	}
 	go c.writeMissingIndexes(ctx)
+	sealed := make(chan struct{})
+	go func() {
+		defer close(sealed)
+		c.runSealing(ctx, tick)
+	}()
+	defer func() { <-sealed }()
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	var lastCleanup time.Time
@@ -823,9 +1063,6 @@ func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 		}
 		if err := c.PollSources(ctx, false); err != nil && ctx.Err() == nil {
 			c.log.Warn("source poll", "err", err)
-		}
-		if err := c.SealDue(ctx); err != nil && ctx.Err() == nil {
-			c.log.Error("seal", "err", err)
 		}
 		if c.Now().Sub(lastCleanup) > time.Hour {
 			lastCleanup = c.Now()
@@ -846,13 +1083,34 @@ func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 	}
 }
 
-// SealErrors returns the last seal error per "storage/epoch".
-func (c *Coordinator) SealErrors() map[string]string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// runSealing seals due weeks every tick until ctx is cancelled.
+func (c *Coordinator) runSealing(ctx context.Context, tick time.Duration) {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		if err := c.SealDue(ctx); err != nil && ctx.Err() == nil {
+			c.log.Error("seal", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// SealErrors returns, per "storage/epoch", why the latest seal attempt of
+// a week failed, for weeks not sealed since. It is kept in the database, so
+// failures survive restarts.
+func (c *Coordinator) SealErrors(ctx context.Context) map[string]string {
+	f, err := c.SealFailures(ctx)
+	if err != nil {
+		c.log.Warn("reading seal attempts", "err", err)
+		return nil
+	}
 	out := map[string]string{}
-	for k, v := range c.sealErr {
-		out[k] = v
+	for k, v := range f {
+		out[k.Storage+"/"+string(k.Epoch)] = fmt.Sprintf("%s (attempt %d of %d)", v.Last.Error, v.Attempts, c.opts.SealAttempts)
 	}
 	return out
 }

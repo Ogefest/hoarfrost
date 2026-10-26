@@ -228,7 +228,7 @@ func cmdSeal(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s/%s sealed: %s (%d bytes, %d records, %d pages), state %s\n", index.StorageOr(*st), id, cat.Package, cat.Size, cat.Records, cat.Pages, cat.State)
+	fmt.Printf("%s/%s sealed: %s (%d bytes, %d captures, %d records, %d pages), state %s\n", index.StorageOr(*st), id, cat.Package, cat.Size, cat.Captures, cat.Records, cat.Pages, cat.State)
 	if cat.State != index.StateVerified {
 		return exitCode(1)
 	}
@@ -278,11 +278,11 @@ func cmdVerify(ctx context.Context, args []string) error {
 				continue
 			}
 			if v.OK {
-				fmt.Printf("%s: ok (%d records)\n", name, v.Records)
+				fmt.Printf("%s: ok (%d captures, %d indexed records, %d records read)\n", name, v.Captures, v.Records, v.Scanned)
 				continue
 			}
 			failed++
-			fmt.Printf("%s: %d problem(s)\n", name, len(v.Problems))
+			fmt.Printf("%s: %d problem(s)\n", name, len(v.Problems)+v.MoreProblems)
 			for _, p := range v.Problems {
 				fmt.Printf("  %s: %s\n", p.Path, p.Message)
 			}

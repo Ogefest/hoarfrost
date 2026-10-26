@@ -89,8 +89,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: critical, job: hoarfrost, storage: default}
             exp_annotations:
-              summary: "Sealing a week failed in storage default"
-              description: "The error is shown under System; the coordinator log has details."
+              summary: "Sealing a week failed or was interrupted in storage default"
+              description: "System > Sealing attempts shows the error, the phase reached and the instance; failed weeks are retried 3 times, an hour apart."
       - eval_time: 3m
         alertname: HoarfrostVerificationFailed
         exp_alerts:

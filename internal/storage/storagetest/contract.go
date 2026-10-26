@@ -24,6 +24,88 @@ func Run(t *testing.T, newStorage func(t *testing.T) storage.Storage) {
 	t.Run("AtomicPut", func(t *testing.T) { testAtomic(t, newStorage(t)) })
 	t.Run("InvalidKeys", func(t *testing.T) { testInvalidKeys(t, newStorage(t)) })
 	t.Run("Large", func(t *testing.T) { testLarge(t, newStorage(t)) })
+	t.Run("CreateStream", func(t *testing.T) { testCreateStream(t, newStorage(t)) })
+	t.Run("CreateAbort", func(t *testing.T) { testCreateAbort(t, newStorage(t)) })
+}
+
+// testCreateStream writes an object in small pieces without knowing its size
+// (spanning several upload parts) and reads it back sequentially.
+func testCreateStream(t *testing.T, s storage.Storage) {
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(7))
+	data := randomBytes(rng, 37<<20+11)
+	w, err := storage.Create(ctx, s, "weekly/2026/W41.wacz", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rest := data; len(rest) > 0; {
+		n := min(len(rest), rng.Intn(1<<20)+1)
+		if _, err := w.Write(rest[:n]); err != nil {
+			t.Fatal(err)
+		}
+		rest = rest[n:]
+		if len(rest) > len(data)/2 {
+			if _, err := s.Stat(ctx, "weekly/2026/W41.wacz"); !errors.Is(err, storage.ErrNotExist) {
+				t.Fatalf("object visible before commit: %v", err)
+			}
+		}
+	}
+	n, err := w.Commit()
+	if err != nil || n != int64(len(data)) {
+		t.Fatalf("commit %d %v", n, err)
+	}
+	if o, err := s.Stat(ctx, "weekly/2026/W41.wacz"); err != nil || o.Size != int64(len(data)) {
+		t.Fatalf("stat %+v %v", o, err)
+	}
+	rc, size, err := storage.Stream(ctx, s, "weekly/2026/W41.wacz")
+	if err != nil || size != int64(len(data)) {
+		t.Fatalf("stream %d %v", size, err)
+	}
+	got, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("streamed content differs (%d bytes): %v", len(got), err)
+	}
+	if _, _, err := storage.Stream(ctx, s, "missing/key"); !errors.Is(err, storage.ErrNotExist) {
+		t.Fatalf("Stream missing: %v", err)
+	}
+}
+
+func testCreateAbort(t *testing.T, s storage.Storage) {
+	ctx := context.Background()
+	w, err := storage.Create(ctx, s, "weekly/2026/W41.wacz", 1<<40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(bytes.Repeat([]byte("x"), 20<<20)); err != nil {
+		t.Fatal(err)
+	}
+	w.Abort()
+	w.Abort()
+	if _, err := w.Commit(); err == nil {
+		t.Fatal("commit after abort succeeded")
+	}
+	if _, err := s.Stat(ctx, "weekly/2026/W41.wacz"); !errors.Is(err, storage.ErrNotExist) {
+		t.Fatalf("aborted object visible: %v", err)
+	}
+	objs, err := s.List(ctx, "")
+	if err != nil || len(objs) != 0 {
+		t.Fatalf("leftover objects: %+v %v", objs, err)
+	}
+
+	cctx, cancel := context.WithCancel(ctx)
+	w, err = storage.Create(cctx, s, "weekly/2026/W42.wacz", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte("partial"))
+	cancel()
+	if _, err := w.Commit(); err == nil {
+		t.Fatal("commit with a cancelled context succeeded")
+	}
+	if _, err := s.Stat(ctx, "weekly/2026/W42.wacz"); !errors.Is(err, storage.ErrNotExist) {
+		t.Fatalf("cancelled object visible: %v", err)
+	}
 }
 
 func randomBytes(rng *rand.Rand, n int) []byte {

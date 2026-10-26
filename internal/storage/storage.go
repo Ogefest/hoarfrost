@@ -46,6 +46,127 @@ type Storage interface {
 	String() string
 }
 
+// Writer streams a new object whose size is not known in advance. Nothing
+// is visible under the key until Commit succeeds; Abort discards the data.
+type Writer interface {
+	io.Writer
+	// Commit stores the object and returns its size.
+	Commit() (int64, error)
+	// Abort discards the object; it is a no-op after Commit.
+	Abort()
+}
+
+// Creator is implemented by backends that store an object while it is
+// produced, so that objects larger than local disk can be written.
+type Creator interface {
+	// Create starts a new object under key; sizeHint (-1 when unknown)
+	// lets the backend size its buffers for very large objects.
+	Create(ctx context.Context, key string, sizeHint int64) (Writer, error)
+}
+
+// Streamer is implemented by backends that read a whole object faster
+// sequentially than through ReaderAt.
+type Streamer interface {
+	// Get returns the content of an object and its size.
+	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
+}
+
+// Create starts streaming a new object to s. Backends without their own
+// implementation receive the data through Put with an unknown size.
+func Create(ctx context.Context, s Storage, key string, sizeHint int64) (Writer, error) {
+	if c, ok := s.(Creator); ok {
+		return c.Create(ctx, key, sizeHint)
+	}
+	if err := ValidKey(key); err != nil {
+		return nil, err
+	}
+	return newPipeWriter(ctx, func(ctx context.Context, r io.Reader) error { return s.Put(ctx, key, r, -1) }, nil), nil
+}
+
+// Stream reads a whole object sequentially.
+func Stream(ctx context.Context, s Storage, key string) (io.ReadCloser, int64, error) {
+	if st, ok := s.(Streamer); ok {
+		return st.Get(ctx, key)
+	}
+	r, err := s.Open(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.NewSectionReader(r, 0, r.Size()), r}, r.Size(), nil
+}
+
+// errAborted ends an upload abandoned by its writer.
+var errAborted = errors.New("storage: upload aborted")
+
+// pipeWriter feeds an upload running in the background through a pipe.
+type pipeWriter struct {
+	pw     *io.PipeWriter
+	cancel context.CancelFunc
+	done   chan error
+	n      int64
+	ended  bool
+	// check runs after a successful upload, e.g. to compare stored size.
+	check func(n int64) error
+}
+
+func newPipeWriter(ctx context.Context, upload func(ctx context.Context, r io.Reader) error, check func(n int64) error) *pipeWriter {
+	ctx, cancel := context.WithCancel(ctx)
+	pr, pw := io.Pipe()
+	w := &pipeWriter{pw: pw, cancel: cancel, done: make(chan error, 1), check: check}
+	go func() {
+		err := upload(ctx, pr)
+		if err == nil {
+			// The upload must have consumed everything; a writer still
+			// blocked in Write would otherwise hang.
+			_, err = io.Copy(io.Discard, pr)
+		}
+		pr.CloseWithError(cmp(err, io.ErrClosedPipe))
+		w.done <- err
+	}()
+	return w
+}
+
+// cmp returns err, or fallback when err is nil.
+func cmp(err, fallback error) error {
+	if err != nil {
+		return err
+	}
+	return fallback
+}
+
+func (w *pipeWriter) Write(p []byte) (int, error) {
+	n, err := w.pw.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func (w *pipeWriter) Commit() (int64, error) {
+	if w.ended {
+		return 0, errors.New("storage: writer already finished")
+	}
+	w.ended = true
+	w.pw.Close()
+	err := <-w.done
+	w.cancel()
+	if err == nil && w.check != nil {
+		err = w.check(w.n)
+	}
+	return w.n, err
+}
+
+func (w *pipeWriter) Abort() {
+	if w.ended {
+		return
+	}
+	w.ended = true
+	w.cancel()
+	w.pw.CloseWithError(errAborted)
+	<-w.done
+}
+
 // ValidKey reports whether key is a clean relative slash-separated path.
 func ValidKey(key string) error {
 	if key == "" || strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") ||

@@ -33,6 +33,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
 	"github.com/ogefest/hoarfrost/internal/recorder"
+	"github.com/ogefest/hoarfrost/internal/sealrun"
 	"github.com/ogefest/hoarfrost/internal/sourcestore"
 	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/testsite"
@@ -759,5 +760,130 @@ func TestHostAliases(t *testing.T) {
 	aliases, _ := sourcestore.New(e.db).HostAliases(ctx)
 	if got := aliases[strings.ToLower(alias.URL)].Target; got != strings.ToLower(e.site.URL) {
 		t.Fatalf("aliases %+v", aliases)
+	}
+}
+
+// TestInterruptedSealIsFlaggedAndRetried: a week left "sealing" by a
+// process that was killed (the state the coordinator finds after running
+// out of memory) is marked failed, shown as a seal error and sealed again
+// after the retry pause.
+func TestInterruptedSealIsFlaggedAndRetried(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	e.coord.AddURL(ctx, coordinator.URLRequest{URL: e.site.URL + "/news/article.html"})
+	e.drain(e.worker("w", false))
+	ep := epoch.Of(time.Now())
+	now := ep.End().Add(7 * time.Hour)
+	e.coord.Now = func() time.Time { return now }
+
+	if err := e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateSealing}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.coord.SealDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := e.idx.Epoch(ctx, "", ep)
+	if info.State != index.StateFailed || !strings.Contains(info.Error, "interrupted") {
+		t.Fatalf("epoch %+v", info)
+	}
+	errs := e.coord.SealErrors(ctx)
+	if msg := errs["default/"+string(ep)]; !strings.Contains(msg, "out of memory") || !strings.Contains(msg, "attempt 1 of 3") {
+		t.Fatalf("seal errors %v", errs)
+	}
+
+	now = now.Add(2 * time.Hour)
+	if err := e.coord.SealDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateVerified {
+		t.Fatalf("not sealed on retry: %+v", info)
+	}
+	if errs := e.coord.SealErrors(ctx); len(errs) != 0 {
+		t.Fatalf("errors after success: %v", errs)
+	}
+	runs, _ := e.coord.SealRuns(ctx, 10)
+	if len(runs) != 2 || runs[0].Outcome != sealrun.OutcomeOK || runs[0].Phase != archive.PhaseVerifying || runs[1].Outcome != sealrun.OutcomeInterrupted {
+		t.Fatalf("runs %+v", runs)
+	}
+}
+
+// TestStaleSealRunIsInterrupted: a recorded seal whose heartbeat stopped
+// ends as interrupted with the phase it reached, and failed seals are
+// retried only up to the attempt limit.
+func TestStaleSealRunIsInterrupted(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	e.coord.AddURL(ctx, coordinator.URLRequest{URL: e.site.URL + "/news/article.html"})
+	e.drain(e.worker("w", false))
+	ep := epoch.Of(time.Now())
+	now := ep.End().Add(7 * time.Hour)
+	e.coord.Now = func() time.Time { return now }
+
+	other := sealrun.New(e.db)
+	other.Now = func() time.Time { return now.Add(-10 * time.Minute) }
+	id, _ := other.Start(ctx, "default", ep, "vm-48", time.Time{})
+	other.Progress(ctx, id, archive.PhasePackaging, 50<<30, 103<<30)
+	e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateSealing})
+	if err := e.coord.RecoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := e.idx.Epoch(ctx, "", ep)
+	if info.State != index.StateFailed || !strings.HasSuffix(info.Error, "during "+archive.PhasePackaging) {
+		t.Fatalf("epoch %+v", info)
+	}
+	runs, _ := e.coord.SealRuns(ctx, 10)
+	if len(runs) != 1 || runs[0].Outcome != sealrun.OutcomeInterrupted || runs[0].Host != "vm-48" || runs[0].Done != 50<<30 {
+		t.Fatalf("runs %+v", runs)
+	}
+
+	// Two more failures reach the limit of three attempts.
+	other.Now = func() time.Time { return now }
+	other.Record(ctx, "default", ep, "vm-48", sealrun.OutcomeFailed, "a")
+	other.Record(ctx, "default", ep, "vm-48", sealrun.OutcomeFailed, "b")
+	now = now.Add(24 * time.Hour)
+	if err := e.coord.SealDue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateFailed {
+		t.Fatalf("sealed beyond the attempt limit: %+v", info)
+	}
+	// A person can still seal it.
+	if _, err := e.coord.Seal(ctx, "", ep, true); err != nil {
+		t.Fatal(err)
+	}
+	if errs := e.coord.SealErrors(ctx); len(errs) != 0 {
+		t.Fatalf("errors after a manual seal: %v", errs)
+	}
+}
+
+// TestSealRefusedWhileAnotherProcessSeals: a week with a live seal attempt
+// of another process is not sealed twice, and sealing a sealed week again
+// leaves it sealed without a failure.
+func TestSealRefusedWhileAnotherProcessSeals(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	e.coord.AddURL(ctx, coordinator.URLRequest{URL: e.site.URL + "/news/article.html"})
+	e.drain(e.worker("w", false))
+	ep := epoch.Of(time.Now())
+	other := sealrun.New(e.db)
+	id, err := other.Start(ctx, "default", ep, "cli", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.coord.Seal(ctx, "", ep, true); !errors.Is(err, coordinator.ErrSealing) {
+		t.Fatalf("second seal: %v", err)
+	}
+	other.Finish(ctx, id, errors.New("given up"))
+	if _, err := e.coord.Seal(ctx, "", ep, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.coord.Seal(ctx, "", ep, true); !errors.Is(err, archive.ErrAlreadySealed) {
+		t.Fatalf("sealing again: %v", err)
+	}
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateVerified || info.WACZKey == "" {
+		t.Fatalf("epoch %+v", info)
+	}
+	if errs := e.coord.SealErrors(ctx); len(errs) != 0 {
+		t.Fatalf("errors %v", errs)
 	}
 }

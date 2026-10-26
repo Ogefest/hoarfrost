@@ -195,7 +195,11 @@ func build(db string) (*fixture, error) {
 		return nil, err
 	}
 	defer r.Close()
-	for _, name := range f.sealed.Files {
+	offsets, err := r.WARCOffsets()
+	if err != nil {
+		return nil, err
+	}
+	for name := range offsets {
 		b, err := r.ReadEntry(wacz.ArchiveDir + name)
 		if err != nil {
 			return nil, err

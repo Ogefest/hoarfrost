@@ -110,8 +110,8 @@ groups:
         expr: hoarfrost_seal_errors > 0
         labels: {severity: critical}
         annotations:
-          summary: "Sealing a week failed in storage {{ $labels.storage }}"
-          description: "The error is shown under System; the coordinator log has details."
+          summary: "Sealing a week failed or was interrupted in storage {{ $labels.storage }}"
+          description: "System > Sealing attempts shows the error, the phase reached and the instance; failed weeks are retried 3 times, an hour apart."
 
       - alert: HoarfrostVerificationFailed
         expr: hoarfrost_epochs{state="failed"} > 0
