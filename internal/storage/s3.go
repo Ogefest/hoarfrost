@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,6 +27,9 @@ type S3Config struct {
 	AccessKey string
 	SecretKey string
 	PathStyle bool
+	// VisibleWait bounds how long a completed streamed upload may take to
+	// become visible (default 10 minutes).
+	VisibleWait time.Duration
 	// Transport overrides the HTTP transport (used by tests).
 	Transport http.RoundTripper
 }
@@ -70,12 +74,20 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	if cfg.PathStyle {
 		lookup = minio.BucketLookupPath
 	}
+	base := cfg.Transport
+	if base == nil {
+		tr, err := minio.DefaultTransport(cfg.Secure)
+		if err != nil {
+			return nil, fmt.Errorf("storage: %w", err)
+		}
+		base = tr
+	}
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure:       cfg.Secure,
 		Region:       cfg.Region,
 		BucketLookup: lookup,
-		Transport:    cfg.Transport,
+		Transport:    &s3LogTransport{base: base},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("storage: %w", err)
@@ -121,7 +133,7 @@ func (s *S3) Put(ctx context.Context, key string, r io.Reader, size int64) error
 		_ = s.client.RemoveObject(context.WithoutCancel(ctx), s.cfg.Bucket, s.key(key), minio.RemoveObjectOptions{})
 		return fmt.Errorf("storage: put %s: stored %d bytes, expected %d", key, info.Size, size)
 	}
-	st, err := s.Stat(ctx, key)
+	st, err := s.statVisible(ctx, key)
 	if err != nil {
 		return fmt.Errorf("storage: verify %s: %w", key, err)
 	}
@@ -162,18 +174,21 @@ func (s *S3) Create(ctx context.Context, key string, sizeHint int64) (Writer, er
 		ContentType: "application/octet-stream", SendContentMd5: true, DisableContentSha256: true,
 		PartSize: s3PartSize(sizeHint), ConcurrentStreamParts: true, NumThreads: s3UploadThreads,
 	}
+	var stored minio.UploadInfo
 	upload := func(ctx context.Context, r io.Reader) error {
-		_, err := s.client.PutObject(ctx, s.cfg.Bucket, s.key(key), r, -1, opts)
+		info, err := s.client.PutObject(ctx, s.cfg.Bucket, s.key(key), r, -1, opts)
 		if err != nil {
 			_ = s.client.RemoveIncompleteUpload(context.WithoutCancel(ctx), s.cfg.Bucket, s.key(key))
 			return fmt.Errorf("storage: put %s: %w", key, err)
 		}
+		stored = info
 		return nil
 	}
 	check := func(n int64) error {
-		st, err := s.Stat(ctx, key)
+		st, err := s.statVisible(ctx, key)
 		if err != nil {
-			return fmt.Errorf("storage: verify %s: %w", key, err)
+			return fmt.Errorf("storage: verify %s (upload completed: %d bytes, etag %s; %s): %w",
+				key, stored.Size, stored.ETag, s.describe(ctx, key), err)
 		}
 		if st.Size != n {
 			return fmt.Errorf("storage: verify %s: size %d, sent %d", key, st.Size, n)
@@ -181,6 +196,62 @@ func (s *S3) Create(ctx context.Context, key string, sizeHint int64) (Writer, er
 		return nil
 	}
 	return newPipeWriter(ctx, upload, check), nil
+}
+
+// describe tells what the bucket listing shows of key and of its pending
+// multipart uploads, to explain an object missing after its upload.
+func (s *S3) describe(ctx context.Context, key string) string {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	listed := "not listed"
+	for o := range s.client.ListObjects(ctx, s.cfg.Bucket, minio.ListObjectsOptions{Prefix: s.key(key), Recursive: true}) {
+		if o.Err != nil {
+			listed = "listing failed: " + o.Err.Error()
+			break
+		}
+		if o.Key == s.key(key) {
+			listed = fmt.Sprintf("listed with %d bytes", o.Size)
+		}
+	}
+	pending := 0
+	for u := range s.client.ListIncompleteUploads(ctx, s.cfg.Bucket, s.key(key), false) {
+		if u.Err != nil {
+			return listed + "; listing uploads failed: " + u.Err.Error()
+		}
+		if u.Key == s.key(key) {
+			pending++
+		}
+	}
+	return fmt.Sprintf("%s, %d pending uploads", listed, pending)
+}
+
+// statVisible stats an object whose multipart upload has just completed.
+// Some servers (e.g. several gateways or filers behind a load balancer)
+// show a large object only after a while, so a missing object is looked
+// up again, with growing pauses, for up to VisibleWait.
+func (s *S3) statVisible(ctx context.Context, key string) (Object, error) {
+	limit := s.cfg.VisibleWait
+	if limit <= 0 {
+		limit = 10 * time.Minute
+	}
+	deadline := time.Now().Add(limit)
+	pause := min(time.Second, limit/20)
+	for {
+		st, err := s.Stat(ctx, key)
+		if !errors.Is(err, ErrNotExist) || time.Now().Add(pause).After(deadline) {
+			if err != nil && errors.Is(err, ErrNotExist) {
+				err = fmt.Errorf("%w (still missing after %s)", err, limit)
+			}
+			return st, err
+		}
+		slog.Warn("s3 object not visible after its upload; waiting", "key", key, "pause", pause)
+		select {
+		case <-ctx.Done():
+			return Object{}, ctx.Err()
+		case <-time.After(pause):
+		}
+		pause = min(pause*2, 30*time.Second)
+	}
 }
 
 // Get reads the object with one streaming request, resuming from the

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
@@ -247,5 +248,68 @@ func TestS3StreamResumes(t *testing.T) {
 	}
 	if tr.breaks != 0 {
 		t.Fatalf("%d breaks left", tr.breaks)
+	}
+}
+
+// hidingTransport answers the first HEAD requests with 404, like a server
+// that shows a completed upload only after a while.
+type hidingTransport struct {
+	mu    sync.Mutex
+	hides int
+	heads int
+}
+
+func (h *hidingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodHead {
+		h.mu.Lock()
+		h.heads++
+		hide := h.hides > 0
+		if hide {
+			h.hides--
+		}
+		h.mu.Unlock()
+		if hide {
+			return &http.Response{StatusCode: http.StatusNotFound, Status: "404 Not Found", Header: http.Header{},
+				Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestS3CreateWaitsUntilVisible(t *testing.T) {
+	backend := s3mem.New()
+	srv := httptest.NewServer(gofakes3.New(backend).Server())
+	t.Cleanup(srv.Close)
+	backend.CreateBucket("archive")
+	u, _ := url.Parse(srv.URL)
+	tr := &hidingTransport{}
+	s, err := storage.NewS3(context.Background(), storage.S3Config{
+		Endpoint: u.Host, Bucket: "archive", Region: "us-east-1", AccessKey: "key", SecretKey: "secret", PathStyle: true,
+		Transport: tr, VisibleWait: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	write := func(key string) error {
+		w, err := storage.Create(ctx, s, key, 0)
+		if err != nil {
+			return err
+		}
+		defer w.Abort()
+		if _, err := w.Write([]byte("package")); err != nil {
+			return err
+		}
+		_, err = w.Commit()
+		return err
+	}
+	tr.hides = 3
+	if err := write("weekly/2026/W43.wacz"); err != nil {
+		t.Fatalf("object shown late: %v", err)
+	}
+	tr.hides = 1 << 20
+	err = write("weekly/2026/W44.wacz")
+	if !errors.Is(err, storage.ErrNotExist) || !strings.Contains(err.Error(), "etag") {
+		t.Fatalf("object never shown: %v", err)
 	}
 }

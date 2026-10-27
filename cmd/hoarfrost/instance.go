@@ -30,10 +30,15 @@ func newLogger(env *config.Env) *slog.Logger {
 		level = slog.LevelInfo
 	}
 	opts := &slog.HandlerOptions{Level: level}
+	var log *slog.Logger
 	if env.LogFormat == "json" {
-		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+		log = slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	} else {
+		log = slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+	// Packages without a logger of their own (e.g. storage) use the default.
+	slog.SetDefault(log)
+	return log
 }
 
 // openStorages opens every configured storage with its optional replica.
