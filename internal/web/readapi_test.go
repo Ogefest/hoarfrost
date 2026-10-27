@@ -203,7 +203,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	links := pg["links"].(map[string]any)
 	values := strings.NewReplacer("{id}", id, "{file}", id+".html",
 		"{recordId}", strings.TrimPrefix(links["record"].(string), "/api/record/"),
-		"{storage}", "default", "{year}", fmt.Sprintf("%04d", ep.Year()), "{week}", fmt.Sprintf("W%02d.wacz", ep.Week()))
+		"{storage}", "default", "{path}", strings.TrimPrefix(ep.VolumeKey(1), "weekly/"))
 	if len(spec.Paths) < 8 {
 		t.Fatalf("paths: %v", spec.Paths)
 	}

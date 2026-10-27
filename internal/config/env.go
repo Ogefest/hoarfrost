@@ -40,9 +40,11 @@ type Env struct {
 	Retention       time.Duration
 	LeaseDuration   time.Duration
 	ConcatBySource  bool
-	InsecureCookie  bool
-	LogLevel        string
-	LogFormat       string
+	// VolumeSize bounds the capture bytes of one WACZ volume of a week.
+	VolumeSize     int64
+	InsecureCookie bool
+	LogLevel       string
+	LogFormat      string
 }
 
 // LoadDotEnv sets variables from a .env file without overriding variables
@@ -134,6 +136,10 @@ func FromEnvironment() (*Env, error) {
 	}
 	if e.ConcatBySource, err = boolVar("HOARFROST_CONCAT_BY_SOURCE", false); err != nil {
 		return nil, err
+	}
+	// A volume must fit one S3 PUT request (5 GiB) with its indexes.
+	if e.VolumeSize, err = ParseByteSize(get("HOARFROST_VOLUME_SIZE", "4GiB")); err != nil || e.VolumeSize <= 0 || e.VolumeSize > 4608<<20 {
+		return nil, fmt.Errorf("HOARFROST_VOLUME_SIZE: %q is not a size up to 4.5GiB", os.Getenv("HOARFROST_VOLUME_SIZE"))
 	}
 	if e.InsecureCookie, err = boolVar("HOARFROST_INSECURE_COOKIE", false); err != nil {
 		return nil, err

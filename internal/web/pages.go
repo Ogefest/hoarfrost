@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
 	"github.com/ogefest/hoarfrost/internal/recorder"
+	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/upload"
 )
 
@@ -323,7 +325,13 @@ func (s *Server) replayPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "full replay is available after the week is sealed; use the quick preview", http.StatusConflict)
 		return
 	}
-	d := replayData{Page: p, Source: fmt.Sprintf("/wacz/%s/%04d/W%02d.wacz", index.StorageOr(p.Storage), p.Epoch.Year(), p.Epoch.Week()),
+	// A week stored as volumes opens as one collection, so a revisit finds
+	// its original in another volume.
+	src := strings.TrimPrefix(p.Epoch.WeeklyKey(), "weekly/")
+	if strings.HasSuffix(info.WACZKey, "/") {
+		src = strings.TrimPrefix(p.Epoch.CollectionKey(), "weekly/")
+	}
+	d := replayData{Page: p, Source: fmt.Sprintf("/wacz/%s/%s", index.StorageOr(p.Storage), src),
 		TS: p.Captured.UTC().Format("20060102150405"), Version: ReplayWebVersion}
 	s.render(w, r, "replay.html", "Replay: "+p.Title, d)
 }
@@ -334,11 +342,12 @@ func (s *Server) replayWorker(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "importScripts(\"https://cdn.jsdelivr.net/npm/replaywebpage@%s/sw.js\");\n", ReplayWebVersion)
 }
 
-// serveWACZ streams a weekly package with Range support.
+// serveWACZ streams a weekly package or volume, or the collection of a
+// week's volumes, with Range support: /wacz/<storage>/<path under weekly/>.
 func (s *Server) serveWACZ(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSuffix(r.PathValue("week"), ".wacz")
-	ep, err := epoch.Parse(r.PathValue("year") + "-" + name)
-	if err != nil {
+	key := "weekly/" + r.PathValue("path")
+	ep, ok := epoch.FromKey(key)
+	if !ok || storage.ValidKey(key) != nil || !(strings.HasSuffix(key, ".wacz") || key == ep.CollectionKey()) {
 		http.NotFound(w, r)
 		return
 	}
@@ -347,7 +356,7 @@ func (s *Server) serveWACZ(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	rd, err := arc.Storage.Open(r.Context(), ep.WeeklyKey())
+	rd, err := arc.Storage.Open(r.Context(), key)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -357,7 +366,11 @@ func (s *Server) serveWACZ(w http.ResponseWriter, r *http.Request) {
 	if cat, err := arc.ReadCatalog(r.Context(), ep); err == nil {
 		modTime = cat.SealedAt
 	}
-	w.Header().Set("Content-Type", "application/wacz+zip")
+	if strings.HasSuffix(key, ".json") {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/wacz+zip")
+	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
-	http.ServeContent(w, r, ep.WeeklyKey(), modTime, io.NewSectionReader(rd, 0, rd.Size()))
+	http.ServeContent(w, r, path.Base(key), modTime, io.NewSectionReader(rd, 0, rd.Size()))
 }

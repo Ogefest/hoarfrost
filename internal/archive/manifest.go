@@ -16,11 +16,12 @@ import (
 // ManifestFormat identifies the captures list format.
 const ManifestFormat = "hoarfrost-captures-1"
 
-// Manifest lists the capture files packaged into a weekly package and where
-// each one is inside it (weekly/<year>/W<week>.captures.jsonl). The first
-// line describes the package, each further line one capture file. It lets
-// verification prove that every incoming file is in the package byte for
-// byte, and lets an interrupted seal resume after the package was stored.
+// Manifest lists the capture files packaged into a WACZ package (a volume
+// of a week, or the single package of an older week) and where each one is
+// inside it. The first line describes the package, each further line one
+// capture file. It lets verification prove that every incoming file is in
+// the package byte for byte, and lets an interrupted seal resume after the
+// package was stored.
 type Manifest struct {
 	Format    string    `json:"format"`
 	Epoch     epoch.ID  `json:"epoch"`
@@ -40,6 +41,12 @@ type Manifest struct {
 	Captures     []ManifestCapture `json:"-"`
 }
 
+// volume describes the package of a captures list in the catalog.
+func (m *Manifest) volume(key string) Volume {
+	return Volume{Key: m.Package, SHA256: m.SHA256, Size: m.Size, CapturesList: key, Captures: len(m.Captures),
+		WARCFiles: m.WARCFiles, Records: m.Indexed, Pages: m.Pages}
+}
+
 // ManifestCapture is one packaged capture file.
 type ManifestCapture struct {
 	// Key is the capture's incoming/ key.
@@ -55,10 +62,10 @@ type ManifestCapture struct {
 	Pages   int    `json:"pages"`
 }
 
-// WriteManifest stores the captures list of a package.
-func (a *Archive) WriteManifest(ctx context.Context, m *Manifest) error {
+// WriteManifest stores the captures list of a package at key.
+func (a *Archive) WriteManifest(ctx context.Context, key string, m *Manifest) error {
 	m.Format, m.CaptureCount = ManifestFormat, len(m.Captures)
-	w, err := storage.Create(ctx, a.Storage, m.Epoch.CapturesKey(), int64(len(m.Captures))*300)
+	w, err := storage.Create(ctx, a.Storage, key, int64(len(m.Captures))*300)
 	if err != nil {
 		return err
 	}
@@ -80,9 +87,9 @@ func (a *Archive) WriteManifest(ctx context.Context, m *Manifest) error {
 	return err
 }
 
-// ReadManifest loads the captures list of a sealed epoch.
-func (a *Archive) ReadManifest(ctx context.Context, ep epoch.ID) (*Manifest, error) {
-	rc, _, err := storage.Stream(ctx, a.Storage, ep.CapturesKey())
+// ReadManifest loads the captures list stored at key.
+func (a *Archive) ReadManifest(ctx context.Context, key string) (*Manifest, error) {
+	rc, _, err := storage.Stream(ctx, a.Storage, key)
 	if err != nil {
 		return nil, err
 	}

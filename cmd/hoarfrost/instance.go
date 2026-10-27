@@ -114,6 +114,7 @@ func openInstance(ctx context.Context) (*instance, error) {
 	for _, a := range in.lib.All() {
 		a.IncomingRetention = env.Retention
 		a.ConcatBySource = env.ConcatBySource
+		a.VolumeSize = env.VolumeSize
 	}
 	in.closers = append(in.closers, in.lib.Close)
 	if os.Getenv("HOARFROST_SOURCES") != "" {

@@ -122,10 +122,22 @@ func (s *S3) Put(ctx context.Context, key string, r io.Reader, size int64) error
 		return err
 	}
 	cr := &countReader{r: r}
-	info, err := s.client.PutObject(ctx, s.cfg.Bucket, s.key(key), cr, size, minio.PutObjectOptions{
-		SendContentMd5: true,
-		ContentType:    "application/octet-stream",
-	})
+	opts := minio.PutObjectOptions{SendContentMd5: true, ContentType: "application/octet-stream"}
+	var body io.Reader = cr
+	// The reader must also be an io.ReaderAt: minio-go hashes other
+	// readers by loading the whole object into memory.
+	if f, ok := r.(interface {
+		io.ReadSeeker
+		io.ReaderAt
+	}); ok && size >= 0 && size <= s3MaxSinglePut {
+		// A file goes up in one request, stored as it arrives: no multipart
+		// upload for the server to assemble (some servers limit the parts
+		// of an upload or take minutes to complete a large one). Content-MD5
+		// is computed by reading the file before sending it.
+		opts.DisableMultipart, opts.DisableContentSha256 = true, true
+		body, cr.n = f, size
+	}
+	info, err := s.client.PutObject(ctx, s.cfg.Bucket, s.key(key), body, size, opts)
 	if err != nil {
 		return fmt.Errorf("storage: put %s: %w", key, err)
 	}
@@ -142,6 +154,9 @@ func (s *S3) Put(ctx context.Context, key string, r io.Reader, size int64) error
 	}
 	return nil
 }
+
+// s3MaxSinglePut is the largest object S3 accepts in one PUT request.
+const s3MaxSinglePut = 5 << 30
 
 // Streamed uploads send this many parts at once; each holds a part-sized
 // buffer in memory.

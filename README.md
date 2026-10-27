@@ -33,11 +33,11 @@ archive can be read with standard tools alone.
    (UI, API, queue,                    capture pages into WARC
     embedded worker)                            │
          │                                      ▼
-    PostgreSQL ◄── index ── storage: incoming/*.warc.gz ── weekly ──► weekly/*.wacz
+    PostgreSQL ◄── index ── storage: incoming/*.warc.gz ── weekly ──► weekly/<year>/W<week>/*.wacz
 ```
 
-Captured pages are deduplicated within ISO weeks and sealed every week into a
-self-contained, verified WACZ package. Other applications read the archive
+Captured pages are deduplicated within ISO weeks and sealed every week into
+self-contained, verified WACZ volumes. Other applications read the archive
 through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
 
 ## Features
@@ -63,17 +63,20 @@ through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
   every capture; the list version is recorded in each WARC file.
 - **Deduplication** within ISO-week epochs (`revisit` records with
   `WARC-Refers-To`); a revisit never points to a record that is not stored.
-- **Weekly packages**: WACZ 1.1.1 (stored ZIP, ZIP64), sorted CDXJ (or a
-  ZipNum block index), `pages.jsonl` with article text, SHA-256 fixity in
-  `datapackage.json` and a `.sha256` file; records are readable with a
-  single range request.
-- **Verification** of every package (hashes, digests, revisit targets,
-  stored entries) after sealing and on demand.
+- **Weekly volumes**: a week is stored as WACZ 1.1.1 volumes of a bounded
+  size (4 GiB by default, one S3 PUT each, so a terabyte week needs no more
+  disk or memory than a small one): stored ZIP, sorted CDXJ (or a ZipNum
+  block index), `pages.jsonl` with article text, SHA-256 fixity in
+  `datapackage.json` and `SHA256SUMS`, a multi-WACZ `collection.json` that
+  opens the week as one archive; records are readable with a single range
+  request.
+- **Verification** of every week (hashes, digests, every capture file byte
+  for byte, revisit targets, stored entries) after sealing and on demand.
 - **Structured data** of every page: schema.org objects (JSON-LD,
   microdata, RDFa), Open Graph and Twitter Card properties, microformats2
   items (`h-entry`, `h-card`…) and keywords, stored in the archive, exposed
   by the API, browsable in SQL tables and kept per week in a Parquet page
-  table next to the package; filter the archive by keyword.
+  table next to the volumes; filter the archive by keyword.
 - **Full-text search** (PostgreSQL, diacritics-insensitive), timeline of
   captures per URL, quick preview (single HTML with `data:` URIs, sandboxed),
   HTML export, raw WARC record download, full replay with ReplayWeb.page.
@@ -143,10 +146,12 @@ docker compose up --build
   README.md                                   layout and formats, written by hoarfrost
   config/sources/2026-10-11T120000Z.yaml      history of capture configuration
   incoming/2026/W41/<ts>-<source>-<id>.warc.gz   one file per capture (temporary)
-  weekly/2026/W41.wacz                        weekly package (permanent)
-  weekly/2026/W41.wacz.sha256
+  weekly/2026/W41/2026-W41-0001.wacz          volumes of the week (permanent)
+  weekly/2026/W41/2026-W41-0001.captures.jsonl  capture files in the volume, with SHA-256
+  weekly/2026/W41/SHA256SUMS
+  weekly/2026/W41/collection.json             the volumes as one multi-WACZ collection
   weekly/2026/W41.parquet                     page table: URL, title, description, schema.org
-  catalog/2026/W41.json                       package status and verification result
+  catalog/2026/W41.json                       volumes, status and verification result
 ```
 
 Database (`HOARFROST_DATABASE`, PostgreSQL): schema `archive_index` (derived,

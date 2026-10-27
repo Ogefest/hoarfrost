@@ -8,22 +8,34 @@ import (
 	"time"
 
 	"github.com/ogefest/hoarfrost/internal/epoch"
+	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/wacz"
 )
 
 // Catalog is the status document of a sealed epoch, stored in catalog/.
 type Catalog struct {
-	Epoch       epoch.ID  `json:"epoch"`
-	State       string    `json:"state"`
-	Package     string    `json:"package"`
+	Epoch epoch.ID `json:"epoch"`
+	State string   `json:"state"`
+	// Package is the single WACZ package of a week sealed before volumes;
+	// later weeks list Volumes instead.
+	Package string `json:"package,omitempty"`
+	// SHA256 is the hash of the package, or of the week's SHA256SUMS file
+	// (Sums); Size counts the bytes of the package or of all volumes.
 	SHA256      string    `json:"sha256"`
 	Size        int64     `json:"size"`
 	SealedAt    time.Time `json:"sealedAt"`
 	Software    string    `json:"software"`
 	WACZVersion string    `json:"waczVersion"`
-	// Manifest is the key of the captures list (see Manifest); Captures
-	// and WARCFiles count its capture files and the package's WARC files.
+	// Volumes are the WACZ packages that together hold the week, each with
+	// its captures list; Sums is the SHA256SUMS file of the volumes and
+	// Collection the multi-WACZ collection listing them.
+	Volumes    []Volume `json:"volumes,omitempty"`
+	Sums       string   `json:"sums,omitempty"`
+	Collection string   `json:"collection,omitempty"`
+	// Manifest is the key of the captures list of a single package (see
+	// Manifest); Captures and WARCFiles count the capture files and WARC
+	// files of all packages.
 	Manifest  string `json:"manifest,omitempty"`
 	Captures  int    `json:"captures,omitempty"`
 	WARCFiles int    `json:"warcFiles,omitempty"`
@@ -38,6 +50,50 @@ type Catalog struct {
 	IncomingDeleted     bool          `json:"incomingDeleted,omitempty"`
 	Parquet             *ParquetInfo  `json:"parquet,omitempty"`
 	Verification        *Verification `json:"verification,omitempty"`
+}
+
+// Volume is one WACZ package of a week.
+type Volume struct {
+	Key    string `json:"key"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	// CapturesList is the key of the volume's captures list.
+	CapturesList string `json:"capturesList,omitempty"`
+	Captures     int    `json:"captures"`
+	WARCFiles    int    `json:"warcFiles"`
+	Records      int    `json:"records"`
+	Pages        int    `json:"pages"`
+}
+
+// Packages returns the week's WACZ packages: its volumes, or its single
+// package.
+func (c *Catalog) Packages() []Volume {
+	if len(c.Volumes) > 0 || c.Package == "" {
+		return c.Volumes
+	}
+	return []Volume{{Key: c.Package, SHA256: c.SHA256, Size: c.Size, CapturesList: c.Manifest,
+		Captures: c.Captures, WARCFiles: c.WARCFiles, Records: c.Records, Pages: c.Pages}}
+}
+
+// Location is where the index says the week is stored: the directory of
+// its volumes, or its single package.
+func (c *Catalog) Location() string {
+	if len(c.Volumes) > 0 {
+		return c.Epoch.VolumeDir()
+	}
+	return c.Package
+}
+
+// epochInfo is the index state the catalog describes.
+func (c *Catalog) epochInfo(storage string) index.EpochInfo {
+	info := index.EpochInfo{Storage: storage, Epoch: c.Epoch, State: c.State, WACZKey: c.Location(), SHA256: c.SHA256, Size: c.Size, SealedAt: c.SealedAt}
+	if c.Verification != nil {
+		info.VerifiedAt = c.Verification.At
+		if !c.Verification.OK && len(c.Verification.Problems) > 0 {
+			info.Error = c.Verification.Problems[0].Path + ": " + c.Verification.Problems[0].Message
+		}
+	}
+	return info
 }
 
 // ParquetInfo describes the page table stored next to the package.

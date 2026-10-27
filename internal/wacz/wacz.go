@@ -58,8 +58,12 @@ type Options struct {
 	Title    string
 	Software string
 	Created  time.Time
-	// ConcatBySource joins captures of the same source into one WARC file.
+	// ConcatBySource joins captures of the same source into one WARC file,
+	// named <source><FileSuffix>.warc.gz.
 	ConcatBySource bool
+	// FileSuffix keeps the names of joined WARC files unique across the
+	// volumes of a week (e.g. "-0003").
+	FileSuffix string
 	// ZipNumThreshold switches to a block index above this many CDXJ lines
 	// (0 means DefaultZipNumMin, negative disables).
 	ZipNumThreshold int
@@ -147,7 +151,17 @@ type part struct {
 	inputs []Input
 }
 
-func plan(inputs []Input, concat bool) []part {
+// Order returns inputs in the order Build writes them, so that a week can
+// be split into volumes along it.
+func Order(inputs []Input, concat bool) []Input {
+	var out []Input
+	for _, p := range plan(inputs, concat, "") {
+		out = append(out, p.inputs...)
+	}
+	return out
+}
+
+func plan(inputs []Input, concat bool, suffix string) []part {
 	sorted := append([]Input(nil), inputs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	if !concat {
@@ -163,7 +177,7 @@ func plan(inputs []Input, concat bool) []part {
 		src := SourceFromName(in.Name)
 		p, ok := bySource[src]
 		if !ok {
-			p = &part{name: src + ".warc.gz"}
+			p = &part{name: src + suffix + ".warc.gz"}
 			bySource[src] = p
 			order = append(order, src)
 		}
@@ -247,7 +261,7 @@ func Build(ctx context.Context, w io.Writer, inputs []Input, opts Options) (*Res
 
 	res := &Result{}
 	var done int64
-	for _, p := range plan(inputs, opts.ConcatBySource) {
+	for _, p := range plan(inputs, opts.ConcatBySource, opts.FileSuffix) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

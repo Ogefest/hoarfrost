@@ -243,36 +243,40 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFoundText"}
 
-  /wacz/{storage}/{year}/{week}:
+  /wacz/{storage}/{path}:
     get:
       tags: [packages]
       operationId: getWeeklyPackage
-      summary: Weekly WACZ package
-      description: A sealed week of a storage. Supports HTTP Range requests.
+      summary: WACZ volume or week collection
+      description: |
+        A file of a sealed week of a storage, by its path under `weekly/`:
+        a WACZ volume (`2026/W43/2026-W43-0001.wacz`), the multi-WACZ
+        collection of the week's volumes (`2026/W43/collection.json`, which
+        ReplayWeb.page opens as one archive), or the single package of a week
+        sealed before volumes (`2026/W41.wacz`). Supports HTTP Range requests.
       parameters:
         - name: storage
           in: path
           required: true
           schema: {type: string, examples: [default]}
-        - name: year
+        - name: path
           in: path
           required: true
-          schema: {type: string, pattern: "^[0-9]{4}$", examples: ["2026"]}
-        - name: week
-          in: path
-          required: true
-          schema: {type: string, pattern: "^W[0-9]{2}\\.wacz$", examples: [W43.wacz]}
+          description: Path under `weekly/`; may contain slashes.
+          schema: {type: string, examples: [2026/W43/2026-W43-0001.wacz, 2026/W43/collection.json]}
         - name: Range
           in: header
           schema: {type: string, examples: ["bytes=0-1023"]}
       responses:
         "200":
-          description: The package.
+          description: The volume, package or collection.
           content:
             application/wacz+zip:
               schema: {type: string, format: binary}
+            application/json:
+              schema: {type: object}
         "206":
-          description: Part of the package.
+          description: Part of the file.
           content:
             application/wacz+zip:
               schema: {type: string, format: binary}

@@ -22,6 +22,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/export"
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/legacy"
+	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/worker"
 )
 
@@ -228,7 +229,8 @@ func cmdSeal(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s/%s sealed: %s (%d bytes, %d captures, %d records, %d pages), state %s\n", index.StorageOr(*st), id, cat.Package, cat.Size, cat.Captures, cat.Records, cat.Pages, cat.State)
+	fmt.Printf("%s/%s sealed: %s (%d volume(s), %d bytes, %d captures, %d records, %d pages), state %s\n", index.StorageOr(*st), id, cat.Location(),
+		len(cat.Packages()), cat.Size, cat.Captures, cat.Records, cat.Pages, cat.State)
 	if cat.State != index.StateVerified {
 		return exitCode(1)
 	}
@@ -320,6 +322,7 @@ func cmdReindex(ctx context.Context, args []string) error {
 		return err
 	}
 	epochs, captures, scanned := 0, 0, 0
+	var missing []string
 	for _, arc := range arcs {
 		opts.Progress = func(id epoch.ID, done, total int) {
 			fmt.Fprintf(os.Stderr, "\r%s/%s %d/%d", arc.Name, id, done, total)
@@ -330,8 +333,14 @@ func cmdReindex(ctx context.Context, args []string) error {
 			return err
 		}
 		epochs, captures, scanned = epochs+len(rep.Epochs), captures+rep.Captures, scanned+len(rep.Scanned)
+		for _, ep := range rep.Missing {
+			missing = append(missing, arc.Name+"/"+string(ep))
+		}
 	}
 	fmt.Printf("rebuilt %d epoch(s), %d open capture(s), %d by scanning WARC data\n", epochs, captures, scanned)
+	if len(missing) > 0 {
+		return fmt.Errorf("sealed week(s) with packages missing from storage, marked failed: %s", strings.Join(missing, ", "))
+	}
 	return nil
 }
 
@@ -412,8 +421,8 @@ func cmdImportLegacy(ctx context.Context, args []string) error {
 		if err != nil || info.State != index.StateOpen {
 			return false
 		}
-		_, err = arc.Storage.Stat(ctx, ep.WeeklyKey())
-		return err != nil
+		_, err = arc.ReadCatalog(ctx, ep)
+		return errors.Is(err, storage.ErrNotExist)
 	}
 	rep, err := legacy.Import(ctx, in.coord, fs.Arg(0), opts)
 	fmt.Fprintln(os.Stderr)

@@ -4,6 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -129,17 +132,20 @@ func TestSealVerifyAndRead(t *testing.T) {
 	if cat.State != index.StateVerified || cat.Verification == nil || !cat.Verification.OK || cat.Pages != 3 || cat.Revisits == 0 {
 		t.Fatalf("catalog %+v", cat)
 	}
-	sumFile, _ := storage.ReadAll(ctx, e.store, ep.ChecksumKey())
-	if string(sumFile) != cat.SHA256+"  W41.wacz\n" {
-		t.Fatalf("sha256 file %q", sumFile)
+	if len(cat.Volumes) != 1 || cat.Volumes[0].Key != "weekly/2026/W41/2026-W41-0001.wacz" || cat.Package != "" {
+		t.Fatalf("volumes %+v", cat.Volumes)
+	}
+	sumFile, _ := storage.ReadAll(ctx, e.store, ep.SumsKey())
+	if string(sumFile) != cat.Volumes[0].SHA256+"  2026-W41-0001.wacz\n" || sha256hex(sumFile) != cat.SHA256 {
+		t.Fatalf("SHA256SUMS %q", sumFile)
 	}
 	stored, err := e.arc.ReadCatalog(ctx, ep)
-	if err != nil || stored.State != index.StateVerified || stored.Captures != 3 || stored.Manifest != "weekly/2026/W41.captures.jsonl" ||
+	if err != nil || stored.State != index.StateVerified || stored.Captures != 3 || stored.Volumes[0].CapturesList != "weekly/2026/W41/2026-W41-0001.captures.jsonl" ||
 		stored.Verification.Captures != 3 || stored.Verification.Records != stored.Records || stored.Verification.Scanned <= stored.Records {
 		t.Fatalf("stored catalog %+v %v", stored, err)
 	}
-	m, err := e.arc.ReadManifest(ctx, ep)
-	if err != nil || len(m.Captures) != 3 || m.SHA256 != cat.SHA256 || m.Indexed != cat.Records || m.Pages != 3 {
+	m, err := e.arc.ReadManifest(ctx, ep.VolumeCapturesKey(1))
+	if err != nil || len(m.Captures) != 3 || m.SHA256 != cat.Volumes[0].SHA256 || m.Indexed != cat.Records || m.Pages != 3 {
 		t.Fatalf("captures list %+v %v", m, err)
 	}
 	info, _ := e.idx.Epoch(ctx, "", ep)
@@ -149,7 +155,7 @@ func TestSealVerifyAndRead(t *testing.T) {
 
 	recs, _ := e.idx.EpochRecords(ctx, "", ep)
 	for _, r := range recs {
-		if r.Location != ep.WeeklyKey() {
+		if r.Location != ep.VolumeKey(1) {
 			t.Fatalf("record %s not relocated: %s", r.URI, r.Location)
 		}
 		rec, err := e.arc.ReadRecord(ctx, r)
@@ -249,10 +255,10 @@ func TestReindexWithCorruptCDXJ(t *testing.T) {
 	}
 	want := e.dump()
 
-	pkg, _ := storage.ReadAll(ctx, e.store, ep.WeeklyKey())
+	pkg, _ := storage.ReadAll(ctx, e.store, ep.VolumeKey(1))
 	broken := rewriteEntry(t, pkg, wacz.PathCDXJ, []byte("this is not cdxj\n"))
 	fs := e.store.(*storage.FS)
-	if err := storage.PutBytes(ctx, fs, ep.WeeklyKey(), broken); err != nil {
+	if err := storage.PutBytes(ctx, fs, ep.VolumeKey(1), broken); err != nil {
 		t.Fatal(err)
 	}
 	e.arc.Close()
@@ -312,10 +318,10 @@ func TestVerifyDetectsBitRot(t *testing.T) {
 	if _, err := e.arc.Seal(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
-	pkg, _ := storage.ReadAll(ctx, e.store, ep.WeeklyKey())
+	pkg, _ := storage.ReadAll(ctx, e.store, ep.VolumeKey(1))
 	r, _ := e.idx.Closest(ctx, e.site.URL+"/news/article.html", e.arc.Now().AddDate(0, 0, -7))
 	pkg[r.Offset+r.Length/2] ^= 0x01
-	storage.PutBytes(ctx, e.store, ep.WeeklyKey(), pkg)
+	storage.PutBytes(ctx, e.store, ep.VolumeKey(1), pkg)
 	e.arc.Close()
 	v, err := e.arc.Verify(ctx, ep)
 	if err != nil {
@@ -406,7 +412,7 @@ func TestSealIncludesUnindexedCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, _ := e.arc.ReadManifest(context.Background(), ep)
+	m, _ := e.arc.ReadManifest(context.Background(), ep.VolumeCapturesKey(1))
 	if cat.Pages != 1 || cat.State != index.StateVerified || m.Captures[0].Key != cf.Key() {
 		t.Fatalf("catalog %+v", cat)
 	}
@@ -516,7 +522,7 @@ func TestSealWritesPageTable(t *testing.T) {
 	cat, _ = e.arc.ReadCatalog(ctx, ep)
 	cat.Parquet = nil
 	e.arc.WriteCatalog(ctx, cat)
-	e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateVerified, WACZKey: cat.Package, SHA256: cat.SHA256, Size: cat.Size, SealedAt: cat.SealedAt})
+	e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateVerified, WACZKey: cat.Location(), SHA256: cat.SHA256, Size: cat.Size, SealedAt: cat.SealedAt})
 	done, err := e.arc.WriteMissingParquet(ctx)
 	if err != nil || len(done) != 1 || done[0] != ep {
 		t.Fatalf("written %v %v", done, err)
@@ -562,6 +568,9 @@ func (f *flakyStore) Put(ctx context.Context, key string, r io.Reader, size int6
 	if f.failing(key) {
 		return errors.New("killed")
 	}
+	if strings.HasSuffix(key, ".wacz") {
+		f.packages++
+	}
 	return f.Storage.Put(ctx, key, r, size)
 }
 
@@ -569,13 +578,10 @@ func (f *flakyStore) Create(ctx context.Context, key string, hint int64) (storag
 	if f.failing(key) {
 		return nil, errors.New("killed")
 	}
-	if strings.HasSuffix(key, ".wacz") {
-		f.packages++
-	}
 	return storage.Create(ctx, f.Storage, key, hint)
 }
 
-// TestSealResumesAfterPackageStored: a seal stopped after the package and
+// TestSealResumesAfterPackageStored: a seal stopped after the volume and
 // its captures list were stored (here: writing the page table) continues
 // from there without packaging again.
 func TestSealResumesAfterPackageStored(t *testing.T) {
@@ -599,7 +605,7 @@ func TestSealResumesAfterPackageStored(t *testing.T) {
 	}
 }
 
-// TestSealStartsOverWithoutCapturesList: a package stored without its
+// TestSealStartsOverWithoutCapturesList: a volume stored without its
 // captures list cannot be trusted and is built again.
 func TestSealStartsOverWithoutCapturesList(t *testing.T) {
 	e := newEnv(t)
@@ -610,8 +616,8 @@ func TestSealStartsOverWithoutCapturesList(t *testing.T) {
 	if _, err := e.arc.Seal(ctx, ep); err == nil {
 		t.Fatal("seal should fail")
 	}
-	if _, err := e.store.Stat(ctx, ep.WeeklyKey()); err != nil {
-		t.Fatalf("package of the failed seal: %v", err)
+	if _, err := e.store.Stat(ctx, ep.VolumeKey(1)); err != nil {
+		t.Fatalf("volume of the failed seal: %v", err)
 	}
 	cat, err := e.arc.Seal(ctx, ep)
 	if err != nil {
@@ -645,8 +651,8 @@ func TestVerifyFindsCaptureMissingFromPackage(t *testing.T) {
 		msgs = append(msgs, p.Message)
 	}
 	all := strings.Join(msgs, "\n")
-	if v.OK || !strings.Contains(all, "capture "+lost.Name+" of the week is not in the package") ||
-		!strings.Contains(all, "1 indexed record(s) of the week are not in the package") {
+	if v.OK || !strings.Contains(all, "capture "+lost.Name+" of the week is not in its packages") ||
+		!strings.Contains(all, "1 indexed record(s) of the week are not in its packages") {
 		t.Fatalf("problems:\n%s", all)
 	}
 	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateFailed || !strings.Contains(info.Error, "more problems") {
@@ -654,8 +660,8 @@ func TestVerifyFindsCaptureMissingFromPackage(t *testing.T) {
 	}
 }
 
-// TestSealToS3 seals into an S3 bucket: the package is uploaded in parts
-// while it is built and verified by reading it back.
+// TestSealToS3 seals into an S3 bucket: each volume is uploaded with one
+// request and verified by reading it back.
 func TestSealToS3(t *testing.T) {
 	e := newEnv(t)
 	backend := s3mem.New()
@@ -752,7 +758,7 @@ func TestSealOfSealedWeek(t *testing.T) {
 	if _, err := e.arc.Seal(ctx, ep); !errors.Is(err, archive.ErrAlreadySealed) {
 		t.Fatal(err)
 	}
-	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateVerified || info.WACZKey != cat.Package || info.SHA256 != cat.SHA256 {
+	if info, _ := e.idx.Epoch(ctx, "", ep); info.State != index.StateVerified || info.WACZKey != cat.Location() || info.SHA256 != cat.SHA256 {
 		t.Fatalf("state not restored: %+v", info)
 	}
 	cat.Verification, cat.State = nil, index.StateSealed
@@ -781,5 +787,247 @@ func TestCleanupKeepsUnpackagedFiles(t *testing.T) {
 	left, _ := e.store.List(ctx, ep.IncomingPrefix())
 	if len(left) != 1 || left[0].Key != late {
 		t.Fatalf("left %+v", left)
+	}
+}
+
+func sha256hex(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// TestSealIntoVolumes splits a week into one volume per capture file: the
+// volumes, SHA256SUMS and the collection are stored, a revisit in one
+// volume points to its original in another, and the index is rebuilt from
+// the volumes.
+func TestSealIntoVolumes(t *testing.T) {
+	e := newEnv(t)
+	e.arc.VolumeSize = 1
+	e.arc.ConcatBySource = true
+	e.populate()
+	ctx := context.Background()
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.State != index.StateVerified || len(cat.Volumes) != 3 || cat.Captures != 3 || cat.Location() != "weekly/2026/W41/" {
+		t.Fatalf("catalog %+v", cat)
+	}
+	var size int64
+	var sums strings.Builder
+	files := map[string]bool{}
+	for i, v := range cat.Volumes {
+		if v.Key != ep.VolumeKey(i+1) || v.Captures != 1 {
+			t.Fatalf("volume %d: %+v", i+1, v)
+		}
+		size += v.Size
+		sums.WriteString(v.SHA256 + "  " + strings.TrimPrefix(v.Key, ep.VolumeDir()) + "\n")
+		m, err := e.arc.ReadManifest(ctx, v.CapturesList)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if files[m.Captures[0].File] {
+			t.Fatalf("WARC file %s in two volumes", m.Captures[0].File)
+		}
+		files[m.Captures[0].File] = true
+	}
+	if size != cat.Size || !files["serwis_a-0001.warc.gz"] || !files["serwis_a-0002.warc.gz"] {
+		t.Fatalf("size %d of %d, files %v", size, cat.Size, files)
+	}
+	got, _ := storage.ReadAll(ctx, e.store, ep.SumsKey())
+	if string(got) != sums.String() || sha256hex(got) != cat.SHA256 {
+		t.Fatalf("SHA256SUMS %q", got)
+	}
+	var coll archive.Collection
+	raw, _ := storage.ReadAll(ctx, e.store, ep.CollectionKey())
+	if err := json.Unmarshal(raw, &coll); err != nil || coll.Profile != "multi-wacz-package" || len(coll.Resources) != 3 ||
+		coll.Resources[1].Path != "2026-W41-0002.wacz" || coll.Resources[1].Hash != "sha256:"+cat.Volumes[1].SHA256 {
+		t.Fatalf("collection %s %v", raw, err)
+	}
+
+	css, _ := e.idx.Timeline(ctx, e.site.URL+"/css/main.css")
+	var revisit index.Record
+	for _, r := range css {
+		if r.Type == warcio.TypeRevisit && r.Epoch == ep {
+			revisit = r
+		}
+	}
+	orig, err := e.idx.Record(ctx, revisit.RefersTo)
+	if err != nil || revisit.Location == orig.Location || !strings.HasPrefix(revisit.Location, ep.VolumeDir()) {
+		t.Fatalf("revisit in %s, original in %s: %v", revisit.Location, orig.Location, err)
+	}
+	if res, err := e.arc.Fetch(ctx, revisit); err != nil || !bytes.Contains(res.Body, []byte("@import")) {
+		t.Fatalf("revisit across volumes: %v", err)
+	}
+
+	want := e.dump()
+	e.arc.Close()
+	e.idx.Close()
+	e.openIndex()
+	e.arc.VolumeSize = 1
+	if _, err := e.arc.Reindex(ctx, archive.ReindexOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.dump(); got != want {
+		t.Fatalf("index differs after reindex:\n%s", diff(want, got))
+	}
+	if v, err := e.arc.Verify(ctx, ep); err != nil || !v.OK || v.Captures != 3 {
+		t.Fatalf("verify after reindex: %+v %v", v, err)
+	}
+
+	// A file left in the volume directory would be loaded with the week.
+	storage.PutBytes(ctx, e.store, ep.VolumeDir()+"2026-W41-0004.wacz", []byte("stray"))
+	v, err := e.arc.Verify(ctx, ep)
+	if err != nil || v.OK || v.Problems[0].Path != ep.VolumeDir()+"2026-W41-0004.wacz" || v.Problems[0].Message != "is not part of the week" {
+		t.Fatalf("stray volume: %+v %v", v, err)
+	}
+}
+
+// TestSealResumesWithNextVolume: a seal stopped while storing a volume
+// keeps the volumes stored before and continues with that one.
+func TestSealResumesWithNextVolume(t *testing.T) {
+	e := newEnv(t)
+	e.arc.VolumeSize = 1
+	e.populate()
+	ctx := context.Background()
+	flaky := &flakyStore{Storage: e.store, fail: map[string]bool{"-0002.wacz": true}}
+	e.arc.Storage = flaky
+	if _, err := e.arc.Seal(ctx, ep); err == nil || !strings.Contains(err.Error(), "volume 2") {
+		t.Fatalf("seal should fail at volume 2: %v", err)
+	}
+	if flaky.packages != 1 {
+		t.Fatalf("volumes stored %d", flaky.packages)
+	}
+	first, _ := e.store.Stat(ctx, ep.VolumeKey(1))
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flaky.packages != 3 || cat.State != index.StateVerified || len(cat.Volumes) != 3 || cat.Volumes[0].Size != first.Size {
+		t.Fatalf("volumes stored %d, catalog %+v", flaky.packages, cat)
+	}
+}
+
+// TestSealFinishesSinglePackage: a week whose single package and captures
+// list were stored by an older version is finished as it is, verified and
+// rebuilt from storage.
+func TestSealFinishesSinglePackage(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	objs, _ := e.store.List(ctx, ep.IncomingPrefix())
+	keys := map[string]string{}
+	var inputs []wacz.Input
+	for _, o := range objs {
+		if !strings.HasSuffix(o.Key, ".warc.gz") {
+			continue
+		}
+		key := o.Key
+		keys[filepath.Base(key)] = key
+		inputs = append(inputs, wacz.Input{Name: filepath.Base(key), Size: o.Size, Open: func(ctx context.Context) (io.ReadCloser, error) {
+			rc, _, err := storage.Stream(ctx, e.store, key)
+			return rc, err
+		}})
+	}
+	m := &archive.Manifest{Epoch: ep, Package: ep.WeeklyKey(), Created: e.arc.Now()}
+	var buf bytes.Buffer
+	res, err := wacz.Build(ctx, &buf, inputs, wacz.Options{Epoch: ep, Created: m.Created, OnCapture: func(cf recorder.CaptureFile, p wacz.Placement) error {
+		c := archive.ManifestCapture{Key: keys[cf.Name], File: p.File, Offset: p.Offset, Size: p.Size, SHA256: p.SHA256, Records: len(cf.Records), Pages: len(cf.Pages)}
+		for _, r := range cf.Records {
+			if r.Indexable() {
+				c.Indexed++
+			}
+		}
+		m.Indexed += c.Indexed
+		m.Captures = append(m.Captures, c)
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage.PutBytes(ctx, e.store, ep.WeeklyKey(), buf.Bytes())
+	storage.PutBytes(ctx, e.store, ep.ChecksumKey(), []byte(wacz.ChecksumLine(res.SHA256, "W41.wacz")))
+	m.SHA256, m.Size, m.WARCFiles, m.Pages = res.SHA256, res.Size, len(res.Files), res.Pages
+	if err := e.arc.WriteManifest(ctx, ep.CapturesKey(), m); err != nil {
+		t.Fatal(err)
+	}
+
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.Package != ep.WeeklyKey() || len(cat.Volumes) != 0 || cat.Location() != ep.WeeklyKey() || cat.State != index.StateVerified || cat.Verification.Captures != 3 {
+		t.Fatalf("catalog %+v %+v", cat, cat.Verification)
+	}
+	if vols, _ := e.store.List(ctx, ep.VolumeDir()); len(vols) != 0 {
+		t.Fatalf("volumes written: %+v", vols)
+	}
+	want := e.dump()
+	e.arc.Close()
+	e.idx.Close()
+	e.openIndex()
+	if _, err := e.arc.Reindex(ctx, archive.ReindexOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.dump(); got != want {
+		t.Fatalf("index differs after reindex:\n%s", diff(want, got))
+	}
+	if v, err := e.arc.Verify(ctx, ep); err != nil || !v.OK {
+		t.Fatalf("verify: %+v %v", v, err)
+	}
+}
+
+// TestReindexReportsMissingVolume: a sealed week with a volume missing
+// from storage is marked failed, not rebuilt from incoming/ as open.
+func TestReindexReportsMissingVolume(t *testing.T) {
+	e := newEnv(t)
+	e.arc.VolumeSize = 1
+	e.populate()
+	ctx := context.Background()
+	if _, err := e.arc.Seal(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	e.store.Delete(ctx, ep.VolumeKey(2))
+	e.arc.Close()
+	e.idx.Close()
+	e.openIndex()
+	rep, err := e.arc.Reindex(ctx, archive.ReindexOptions{})
+	if err != nil || len(rep.Missing) != 1 || rep.Missing[0] != ep {
+		t.Fatalf("report %+v %v", rep, err)
+	}
+	info, _ := e.idx.Epoch(ctx, "", ep)
+	if info.State != index.StateFailed || !strings.Contains(info.Error, ep.VolumeKey(2)) {
+		t.Fatalf("epoch %+v", info)
+	}
+	if files, _ := e.idx.Files(ctx, "", ep); len(files) != 0 {
+		t.Fatalf("week indexed from incoming/: %v", files)
+	}
+}
+
+// TestSealKeepsVolumesTheIndexPointsTo: a resumed seal never removes a
+// volume without its captures list when the index already points into it.
+func TestSealKeepsVolumesTheIndexPointsTo(t *testing.T) {
+	e := newEnv(t)
+	e.arc.VolumeSize = 1
+	e.populate()
+	ctx := context.Background()
+	flaky := &flakyStore{Storage: e.store, fail: map[string]bool{".parquet": true}}
+	e.arc.Storage = flaky
+	if _, err := e.arc.Seal(ctx, ep); err == nil {
+		t.Fatal("seal should fail")
+	}
+	// The index points into the volumes now; the list of volume 3 is lost.
+	e.store.Delete(ctx, ep.VolumeCapturesKey(3))
+	_, err := e.arc.Seal(ctx, ep)
+	if err == nil || !strings.Contains(err.Error(), "resolve by hand") {
+		t.Fatalf("seal: %v", err)
+	}
+	if _, err := e.store.Stat(ctx, ep.VolumeKey(3)); err != nil {
+		t.Fatalf("volume removed: %v", err)
+	}
+	// A later list after a missing one is not removed either.
+	e.store.Delete(ctx, ep.VolumeCapturesKey(2))
+	storage.PutBytes(ctx, e.store, ep.VolumeCapturesKey(3), []byte("x"))
+	if _, err := e.arc.Seal(ctx, ep); err == nil || !strings.Contains(err.Error(), "resolve by hand") {
+		t.Fatalf("seal: %v", err)
 	}
 }

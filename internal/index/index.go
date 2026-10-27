@@ -925,11 +925,12 @@ type Location struct {
 }
 
 // CaptureMove describes where a capture file went when its epoch was
-// packaged: its records and pages move from location From to the package,
-// their offsets grow by Shift and they belong to the package's WARC file
-// File.
+// packaged: its records and pages move from location From to the package
+// To, their offsets grow by Shift and they belong to the package's WARC
+// file File.
 type CaptureMove struct {
 	From  string
+	To    string
 	Name  string // capture file name, the records' file before the move
 	Shift int64
 	File  string
@@ -940,43 +941,49 @@ type CaptureMove struct {
 const moveBatch = 2000
 
 // RelocateCaptures moves the records and pages of capture files of an epoch
-// to the package at location. Rows already moved are left alone, so an
-// interrupted relocation can simply be run again. It fails when a record
-// of the epoch is still elsewhere afterwards.
-func (d *DB) RelocateCaptures(ctx context.Context, storage string, ep epoch.ID, location string, moves []CaptureMove) error {
+// to the packages they were written to. Rows already moved are left alone,
+// so an interrupted relocation can simply be run again. It fails when a
+// record of the epoch is outside those packages afterwards.
+func (d *DB) RelocateCaptures(ctx context.Context, storage string, ep epoch.ID, moves []CaptureMove) error {
 	st := StorageOr(storage)
+	targets := map[string]bool{}
 	for start := 0; start < len(moves); start += moveBatch {
 		batch := moves[start:min(start+moveBatch, len(moves))]
-		from, name, file := make([]string, len(batch)), make([]string, len(batch)), make([]string, len(batch))
+		from, to, name, file := make([]string, len(batch)), make([]string, len(batch)), make([]string, len(batch)), make([]string, len(batch))
 		shift := make([]int64, len(batch))
 		for i, m := range batch {
-			from[i], name[i], shift[i], file[i] = m.From, m.Name, m.Shift, m.File
+			from[i], to[i], name[i], shift[i], file[i] = m.From, m.To, m.Name, m.Shift, m.File
+			targets[m.To] = true
 		}
 		err := d.write(ctx, func(tx *sql.Tx) error {
-			if _, err := tx.ExecContext(ctx, `UPDATE records r SET location = $3, "offset" = r."offset" + u.shift, file = u.file
-				FROM unnest($4::text[], $5::text[], $6::bigint[], $7::text[]) AS u(src, name, shift, file)
+			if _, err := tx.ExecContext(ctx, `UPDATE records r SET location = u.dst, "offset" = r."offset" + u.shift, file = u.file
+				FROM unnest($3::text[], $4::text[], $5::text[], $6::bigint[], $7::text[]) AS u(src, dst, name, shift, file)
 				WHERE r.storage = $1 AND r.epoch = $2 AND r.file = u.name AND r.location = u.src`,
-				st, string(ep), location, from, name, shift, file); err != nil {
+				st, string(ep), from, to, name, shift, file); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE pages p SET location = $3, "offset" = p."offset" + u.shift, file = u.file
-				FROM unnest($4::text[], $5::bigint[], $6::text[]) AS u(src, shift, file)
+			_, err := tx.ExecContext(ctx, `UPDATE pages p SET location = u.dst, "offset" = p."offset" + u.shift, file = u.file
+				FROM unnest($3::text[], $4::text[], $5::bigint[], $6::text[]) AS u(src, dst, shift, file)
 				WHERE p.storage = $1 AND p.epoch = $2 AND p.location = u.src`,
-				st, string(ep), location, from, shift, file)
+				st, string(ep), from, to, shift, file)
 			return err
 		})
 		if err != nil {
 			return fmt.Errorf("index: relocate: %w", err)
 		}
 	}
+	locations := make([]string, 0, len(targets))
+	for l := range targets {
+		locations = append(locations, l)
+	}
 	var n int64
 	var sample string
 	if err := d.db.QueryRowContext(ctx, `SELECT count(*), coalesce(min(location), '') FROM records
-		WHERE storage = $1 AND epoch = $2 AND location <> $3`, st, string(ep), location).Scan(&n, &sample); err != nil {
+		WHERE storage = $1 AND epoch = $2 AND location <> ALL($3::text[])`, st, string(ep), locations).Scan(&n, &sample); err != nil {
 		return err
 	}
 	if n > 0 {
-		return fmt.Errorf("index: relocate: %d record(s) of %s outside %s, e.g. in %s", n, ep, location, sample)
+		return fmt.Errorf("index: relocate: %d record(s) of %s outside its packages, e.g. in %s", n, ep, sample)
 	}
 	return nil
 }
@@ -1015,22 +1022,23 @@ func (d *DB) PageLocations(ctx context.Context, metadataIDs []string) (map[strin
 }
 
 // EpochContents counts the records and pages of an epoch and those of them
-// that are not at location.
+// that are not in the given packages.
 type EpochContents struct {
 	Records, RecordsElsewhere int64
 	Pages, PagesElsewhere     int64
 }
 
-// Contents counts what the index holds for an epoch relative to location.
-func (d *DB) Contents(ctx context.Context, storage string, ep epoch.ID, location string) (EpochContents, error) {
+// Contents counts what the index holds for an epoch relative to the
+// packages at locations.
+func (d *DB) Contents(ctx context.Context, storage string, ep epoch.ID, locations []string) (EpochContents, error) {
 	var c EpochContents
 	st := StorageOr(storage)
-	if err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> $3) FROM records WHERE storage = $1 AND epoch = $2`,
-		st, string(ep), location).Scan(&c.Records, &c.RecordsElsewhere); err != nil {
+	if err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> ALL($3::text[])) FROM records WHERE storage = $1 AND epoch = $2`,
+		st, string(ep), locations).Scan(&c.Records, &c.RecordsElsewhere); err != nil {
 		return c, err
 	}
-	err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> $3) FROM pages WHERE storage = $1 AND epoch = $2`,
-		st, string(ep), location).Scan(&c.Pages, &c.PagesElsewhere)
+	err := d.db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE location <> ALL($3::text[])) FROM pages WHERE storage = $1 AND epoch = $2`,
+		st, string(ep), locations).Scan(&c.Pages, &c.PagesElsewhere)
 	return c, err
 }
 

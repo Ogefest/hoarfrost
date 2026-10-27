@@ -41,27 +41,31 @@ const checkBatch = 5000
 
 // VerifyOptions configure VerifyWith.
 type VerifyOptions struct {
-	// Progress reports bytes of the package read so far.
+	// Progress reports bytes of the packages read so far.
 	Progress func(done, total int64)
 }
 
-// Verify checks a sealed package in storage. See VerifyWith.
+// Verify checks a sealed week in storage. See VerifyWith.
 func (a *Archive) Verify(ctx context.Context, ep epoch.ID) (*Verification, error) {
 	return a.VerifyWith(ctx, ep, VerifyOptions{})
 }
 
-// VerifyWith checks a sealed package in storage in one sequential read:
+// VerifyWith checks a sealed week in storage, reading each of its packages
+// (volumes) once from start to end:
 //
-//   - the package's SHA-256 against the catalog and the .sha256 file, and
-//     every entry against datapackage.json;
-//   - every capture file of the captures list is in the package byte for
-//     byte (its SHA-256 taken when it was read from incoming/), and every
-//     capture the index knows of the week is on the list;
+//   - every package's SHA-256 against the catalog and the SHA256SUMS file
+//     (or .sha256 file), and every entry against datapackage.json; the
+//     collection lists exactly the volumes, and nothing else is in the
+//     volume directory;
+//   - every capture file of the captures lists is in its package byte for
+//     byte (its SHA-256 taken when it was read from incoming/), none is in
+//     two packages, and every capture the index knows of the week is
+//     listed;
 //   - every WARC record is readable with valid block and payload digests;
-//   - every indexed record of the week is in the package at the position
-//     the index gives, and no indexable record of the package is missing
-//     from the index;
-//   - every revisit points to a record of the package with the same digest;
+//   - every indexed record of the week is in a package at the position the
+//     index gives, and no indexable record of a package is missing from the
+//     index;
+//   - every revisit points to a record of the week with the same digest;
 //   - every CDXJ and pages.jsonl line points at its record.
 //
 // Memory use grows with the number of capture files and pages, not with
@@ -73,61 +77,148 @@ func (a *Archive) VerifyWith(ctx context.Context, ep epoch.ID, opts VerifyOption
 	if err != nil {
 		return nil, fmt.Errorf("archive: catalog: %w", err)
 	}
-	rd, err := a.Storage.Open(ctx, cat.Package)
-	if err != nil {
-		return nil, err
+	pkgs := cat.Packages()
+	vr := &verifier{a: a, ctx: ctx, v: v, cat: cat, opts: opts, locations: map[string]bool{}, listed: map[string]int64{}}
+	for _, p := range pkgs {
+		vr.locations[p.Key] = true
+		vr.total += p.Size
 	}
-	defer rd.Close()
-	vr := &verifier{a: a, ctx: ctx, v: v, cat: cat, pkgKey: cat.Package, opts: opts, metadata: map[string]index.Location{}}
-	if rd.Size() != cat.Size {
-		vr.add(cat.Package, "%d bytes, catalog says %d", rd.Size(), cat.Size)
+	if len(pkgs) == 0 {
+		vr.add(ep.CatalogKey(), "lists no package")
 	}
 	if cat.Parquet != nil {
 		a.verifyParquet(ctx, cat.Parquet, vr.add)
 	}
-	if cat.Manifest != "" {
-		if vr.manifest, err = a.ReadManifest(ctx, ep); err != nil {
-			vr.add(cat.Manifest, "%v", err)
+	if len(cat.Volumes) > 0 {
+		if err := vr.checkVolumeFiles(); err != nil {
+			return nil, err
 		}
 	}
-	vr.seenFiles = map[string]bool{}
-	if vr.manifest != nil {
-		vr.byFile = map[string][]ManifestCapture{}
-		for _, c := range vr.manifest.Captures {
-			vr.byFile[c.File] = append(vr.byFile[c.File], c)
+	for _, p := range pkgs {
+		if err := vr.verifyPackage(p); err != nil {
+			return nil, err
 		}
-		for _, segs := range vr.byFile {
-			sort.Slice(segs, func(i, j int) bool { return segs[i].Offset < segs[j].Offset })
+	}
+	if err := vr.checkIndex(); err != nil {
+		return nil, err
+	}
+	return a.finishVerify(ctx, cat, v)
+}
+
+// checkVolumeFiles compares the SHA256SUMS file and the collection with
+// the volumes, and looks for files in the volume directory that are not
+// part of the week.
+func (vr *verifier) checkVolumeFiles() error {
+	cat, ep := vr.cat, vr.cat.Epoch
+	sums := volumeSums(cat.Volumes)
+	if got, err := storage.ReadAll(vr.ctx, vr.a.Storage, cat.Sums); err != nil {
+		vr.add(cat.Sums, "%v", err)
+	} else if h := sha256.Sum256(got); string(got) != string(sums) || hex.EncodeToString(h[:]) != cat.SHA256 {
+		vr.add(cat.Sums, "does not list the volumes of the catalog")
+	}
+	want, err := volumeCollection(ep, cat.Volumes)
+	if err != nil {
+		return err
+	}
+	var wantColl, gotColl Collection
+	_ = json.Unmarshal(want, &wantColl)
+	if got, err := storage.ReadAll(vr.ctx, vr.a.Storage, cat.Collection); err != nil {
+		vr.add(cat.Collection, "%v", err)
+	} else if err := json.Unmarshal(got, &gotColl); err != nil {
+		vr.add(cat.Collection, "%v", err)
+	} else if fmt.Sprint(gotColl.Resources) != fmt.Sprint(wantColl.Resources) {
+		vr.add(cat.Collection, "does not list the volumes of the catalog")
+	}
+	known := map[string]bool{cat.Sums: true, cat.Collection: true}
+	for _, v := range cat.Volumes {
+		known[v.Key], known[v.CapturesList] = true, true
+	}
+	objs, err := vr.a.Storage.List(vr.ctx, ep.VolumeDir())
+	if err != nil {
+		return err
+	}
+	for _, o := range objs {
+		if !known[o.Key] {
+			vr.add(o.Key, "is not part of the week")
+		}
+	}
+	return nil
+}
+
+// verifyPackage reads one package of the week.
+func (vr *verifier) verifyPackage(p Volume) error {
+	ctx, a := vr.ctx, vr.a
+	vr.pkgKey, vr.manifest, vr.byFile, vr.offsets = p.Key, nil, nil, nil
+	vr.seenFiles, vr.metadata = map[string]bool{}, map[string]index.Location{}
+	rd, err := a.Storage.Open(ctx, p.Key)
+	if errors.Is(err, storage.ErrNotExist) {
+		vr.add(p.Key, "missing from storage")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer rd.Close()
+	if rd.Size() != p.Size {
+		vr.add(p.Key, "%d bytes, catalog says %d", rd.Size(), p.Size)
+	}
+	if p.CapturesList != "" {
+		m, err := a.ReadManifest(ctx, p.CapturesList)
+		switch {
+		case err != nil:
+			vr.add(p.CapturesList, "%v", err)
+		case m.Package != p.Key || m.Size != p.Size || m.SHA256 != p.SHA256:
+			vr.add(p.CapturesList, "describes %s (%d bytes, sha256 %s), not the package of the catalog", m.Package, m.Size, m.SHA256)
+		default:
+			vr.manifest, vr.hasLists = m, true
+			vr.byFile = map[string][]ManifestCapture{}
+			for _, c := range m.Captures {
+				vr.byFile[c.File] = append(vr.byFile[c.File], c)
+				if _, dup := vr.listed[c.Key]; dup {
+					vr.add(p.CapturesList, "capture %s is in two packages of the week", path.Base(c.Key))
+				}
+				vr.listed[c.Key] = c.Size
+			}
+			for _, segs := range vr.byFile {
+				sort.Slice(segs, func(i, j int) bool { return segs[i].Offset < segs[j].Offset })
+			}
 		}
 	}
 	pkg, err := wacz.NewReader(rd, rd.Size())
 	if err != nil {
-		vr.add(cat.Package, "%v", err)
+		vr.add(p.Key, "%v", err)
 	} else if vr.offsets, err = pkg.WARCOffsets(); err != nil {
-		vr.add(cat.Package, "%v", err)
+		vr.add(p.Key, "%v", err)
 		pkg = nil
 	}
 	sum, err := vr.scan(pkg, rd.Size())
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if sum != cat.SHA256 {
-		vr.add(cat.Package, "sha256 %s, catalog says %s", sum, cat.SHA256)
+	vr.done += rd.Size()
+	if sum != p.SHA256 {
+		vr.add(p.Key, "sha256 %s, catalog says %s", sum, p.SHA256)
 	}
-	if line, err := storage.ReadAll(ctx, a.Storage, ep.ChecksumKey()); err != nil {
-		vr.add(ep.ChecksumKey(), "%v", err)
-	} else if f := strings.Fields(string(line)); len(f) == 0 || f[0] != sum {
-		vr.add(ep.ChecksumKey(), "does not match package")
-	}
-	if pkg != nil {
-		for _, p := range pkg.CheckSums(vr.sums) {
-			vr.add(p.Path, "%s", p.Message)
-		}
-		if err := vr.checkIndex(); err != nil {
-			return nil, err
+	if vr.cat.Package != "" {
+		ck := vr.cat.Epoch.ChecksumKey()
+		if line, err := storage.ReadAll(ctx, a.Storage, ck); err != nil {
+			vr.add(ck, "%v", err)
+		} else if f := strings.Fields(string(line)); len(f) == 0 || f[0] != sum {
+			vr.add(ck, "does not match package")
 		}
 	}
-	return a.finishVerify(ctx, cat, v)
+	if pkg == nil {
+		return nil
+	}
+	for _, pr := range pkg.CheckSums(vr.sums) {
+		vr.add(pr.Path, "%s", pr.Message)
+	}
+	for file, segs := range vr.byFile {
+		if !vr.seenFiles[file] {
+			vr.add(p.CapturesList, "%d capture(s) listed in %s, which is not in the package", len(segs), file)
+		}
+	}
+	return vr.flush()
 }
 
 func (a *Archive) finishVerify(ctx context.Context, cat *Catalog, v *Verification) (*Verification, error) {
@@ -137,10 +228,8 @@ func (a *Archive) finishVerify(ctx context.Context, cat *Catalog, v *Verificatio
 	if err := a.WriteCatalog(ctx, cat); err != nil {
 		return v, err
 	}
-	info := index.EpochInfo{Storage: a.name(), Epoch: cat.Epoch, State: cat.State, WACZKey: cat.Package, SHA256: cat.SHA256,
-		Size: cat.Size, SealedAt: cat.SealedAt, VerifiedAt: v.At}
+	info := cat.epochInfo(a.name())
 	if !v.OK {
-		info.Error = v.Problems[0].Path + ": " + v.Problems[0].Message
 		if n := len(v.Problems) + v.MoreProblems; n > 1 {
 			info.Error = fmt.Sprintf("%s (and %d more problems)", info.Error, n-1)
 		}
@@ -151,24 +240,32 @@ func (a *Archive) finishVerify(ctx context.Context, cat *Catalog, v *Verificatio
 
 // verifier holds the state of one verification.
 type verifier struct {
-	a        *Archive
-	ctx      context.Context
-	v        *Verification
-	cat      *Catalog
+	a    *Archive
+	ctx  context.Context
+	v    *Verification
+	cat  *Catalog
+	opts VerifyOptions
+	// locations are the week's packages; listed are the capture files of
+	// their captures lists with their sizes.
+	locations   map[string]bool
+	listed      map[string]int64
+	hasLists    bool
+	done, total int64 // bytes of the packages read before the current one, of all
+
+	// The package being read.
 	pkgKey   string
-	opts     VerifyOptions
 	manifest *Manifest
 	offsets  map[string]int64 // WARC file -> data offset
 	// byFile groups the captures list by WARC file, by offset.
 	byFile    map[string][]ManifestCapture
 	seenFiles map[string]bool
 	sums      map[string]wacz.EntrySum
-
-	pending  []recordCheck
-	revisits []recordCheck
 	// metadata are the positions of page metadata records in the package.
-	metadata  map[string]index.Location
-	matched   int64 // indexed records found in the package at their place
+	metadata map[string]index.Location
+
+	pending   []recordCheck
+	revisits  []recordCheck
+	matched   int64 // indexed records found in their package at their place
 	cdxjLines int64
 	pageLines int64
 	segments  int
@@ -184,7 +281,13 @@ type recordCheck struct {
 	refersTo       string
 }
 
+// add records a problem; paths of entries inside a package are prefixed
+// with the package's name.
 func (vr *verifier) add(p, f string, args ...any) {
+	inside := !strings.Contains(p, "/") || strings.HasPrefix(p, wacz.ArchiveDir) || strings.HasPrefix(p, "indexes/") || strings.HasPrefix(p, "pages/")
+	if vr.pkgKey != "" && inside {
+		p = path.Base(vr.pkgKey) + "/" + p
+	}
 	if len(vr.v.Problems) >= maxProblems {
 		vr.v.MoreProblems++
 		return
@@ -274,7 +377,7 @@ func (vr *verifier) scan(pkg *wacz.Reader, size int64) (string, error) {
 		return "", fmt.Errorf("archive: read %s: %w", vr.pkgKey, err)
 	}
 	if vr.opts.Progress != nil {
-		vr.opts.Progress(src.pos, size)
+		vr.opts.Progress(vr.done+src.pos, vr.total)
 	}
 	return hex.EncodeToString(src.h.Sum(nil)), nil
 }
@@ -440,8 +543,8 @@ func (vr *verifier) flush() error {
 		for _, c := range vr.revisits {
 			orig, ok := got[c.refersTo]
 			switch {
-			case !ok || orig.Location != vr.pkgKey:
-				vr.add(vr.pkgKey, "revisit %s refers to %s outside the package", c.id, c.refersTo)
+			case !ok || !vr.locations[orig.Location]:
+				vr.add(vr.pkgKey, "revisit %s refers to %s outside the week's packages", c.id, c.refersTo)
 			case orig.Digest != c.digest:
 				vr.add(vr.pkgKey, "revisit %s digest differs from original %s", c.id, c.refersTo)
 			}
@@ -559,54 +662,49 @@ func (vr *verifier) checkPages(r io.Reader) error {
 	}
 }
 
-// checkIndex compares totals once the package is read: every indexed
-// record and page of the week was found in the package, and every capture
-// the index knows is on the captures list (an index rebuilt from the
-// package knows no captures).
+// checkIndex compares totals once the packages are read: every indexed
+// record and page of the week was found in a package, and every capture
+// the index knows is on a captures list (an index rebuilt from the
+// packages knows no captures).
 func (vr *verifier) checkIndex() error {
 	if err := vr.flush(); err != nil {
 		return err
 	}
-	ep := vr.cat.Epoch
-	cont, err := vr.a.Index.Contents(vr.ctx, vr.a.name(), ep, vr.pkgKey)
+	ep, where := vr.cat.Epoch, vr.cat.Location()
+	locations := make([]string, 0, len(vr.locations))
+	for l := range vr.locations {
+		locations = append(locations, l)
+	}
+	cont, err := vr.a.Index.Contents(vr.ctx, vr.a.name(), ep, locations)
 	if err != nil {
 		return err
 	}
 	vr.v.Records = int(vr.matched)
 	if cont.RecordsElsewhere > 0 {
-		vr.add(vr.pkgKey, "%d indexed record(s) of the week are not in the package", cont.RecordsElsewhere)
+		vr.add(where, "%d indexed record(s) of the week are not in its packages", cont.RecordsElsewhere)
 	}
 	if vr.matched != cont.Records {
-		vr.add(vr.pkgKey, "found %d of the %d indexed records of the week", vr.matched, cont.Records)
+		vr.add(where, "found %d of the %d indexed records of the week", vr.matched, cont.Records)
 	}
 	if vr.cdxjLines != cont.Records {
-		vr.add("indexes", "%d lines for %d indexed records", vr.cdxjLines, cont.Records)
+		vr.add(where, "%d index lines for %d indexed records", vr.cdxjLines, cont.Records)
 	}
 	if cont.PagesElsewhere > 0 || vr.pageLines != cont.Pages || int64(vr.cat.Pages) != cont.Pages {
-		vr.add(wacz.PathPages, "%d pages listed, %d in the catalog, %d indexed (%d elsewhere)", vr.pageLines, vr.cat.Pages, cont.Pages, cont.PagesElsewhere)
+		vr.add(where, "%d pages listed, %d in the catalog, %d indexed (%d elsewhere)", vr.pageLines, vr.cat.Pages, cont.Pages, cont.PagesElsewhere)
 	}
-	if vr.manifest == nil {
+	if !vr.hasLists {
 		return nil
 	}
 	vr.v.Captures = vr.segments
-	for file, segs := range vr.byFile {
-		if !vr.seenFiles[file] {
-			vr.add(vr.cat.Manifest, "%d capture(s) listed in %s, which is not in the package", len(segs), file)
-		}
-	}
 	files, err := vr.a.Index.Files(vr.ctx, vr.a.name(), ep)
 	if err != nil {
 		return err
 	}
-	listed := make(map[string]int64, len(vr.manifest.Captures))
-	for _, c := range vr.manifest.Captures {
-		listed[c.Key] = c.Size
-	}
 	for loc, size := range files {
-		if s, ok := listed[loc]; !ok {
-			vr.add(vr.cat.Manifest, "capture %s of the week is not in the package", path.Base(loc))
+		if s, ok := vr.listed[loc]; !ok {
+			vr.add(where, "capture %s of the week is not in its packages", path.Base(loc))
 		} else if s != size {
-			vr.add(vr.cat.Manifest, "capture %s has %d bytes in the package, %d when it was stored", path.Base(loc), s, size)
+			vr.add(where, "capture %s has %d bytes in its package, %d when it was stored", path.Base(loc), s, size)
 		}
 	}
 	return nil

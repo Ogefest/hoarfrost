@@ -84,6 +84,8 @@ func newInstance(t *testing.T, storageURL string, extraStorages ...string) *inst
 		"HOARFROST_INSECURE_COOKIE=1",
 		"HOARFROST_WORKER_TOKEN=e2e-worker-token",
 		"HOARFROST_WORKERS=1",
+		// Small volumes: a week is split into several.
+		"HOARFROST_VOLUME_SIZE=48KB",
 		"HOARFROST_LOG_LEVEL=warn",
 		"HOARFROST_COORDINATOR=http://"+in.addr,
 		"HOARFROST_STORAGES="+strings.Join(extraStorages, ","),
@@ -310,16 +312,29 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("export from the reindexed instance differs")
 	}
 
-	pkg := filepath.Join(t.TempDir(), "week.wacz")
+	week := t.TempDir()
 	s, err := storage.Open(context.Background(), st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := storage.ReadAll(context.Background(), s, ep.WeeklyKey())
+	objs, err := s.List(context.Background(), ep.VolumeDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(pkg, data, 0o644)
+	volumes := 0
+	for _, o := range objs {
+		data, err := storage.ReadAll(context.Background(), s, o.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(week, filepath.Base(o.Key)), data, 0o644)
+		if strings.HasSuffix(o.Key, ".wacz") {
+			volumes++
+		}
+	}
+	if volumes < 2 {
+		t.Fatalf("week sealed into %d volume(s): %+v", volumes, objs)
+	}
 	table, err := storage.ReadAll(context.Background(), s, ep.ParquetKey())
 	if err != nil {
 		t.Fatalf("page table: %v", err)
@@ -335,8 +350,8 @@ func TestEndToEnd(t *testing.T) {
 	if !found {
 		t.Fatalf("page table lacks article2 with description and author: %+v", rows)
 	}
-	conformance(t, pkg)
-	conformance(t, filepath.Join(prasaDir, filepath.FromSlash(ep.WeeklyKey())))
+	conformance(t, week)
+	conformance(t, filepath.Join(prasaDir, filepath.FromSlash(ep.VolumeDir())))
 	exitTest(t, st, exportAfter)
 }
 
@@ -419,9 +434,9 @@ func firstDiff(a, b string) string {
 	return ""
 }
 
-// conformance runs the checks with independent tools when the tools
-// are installed (CI installs them).
-func conformance(t *testing.T, pkg string) {
+// conformance runs scripts/conformance.sh on a week's volume directory
+// when the tools are installed (CI installs them).
+func conformance(t *testing.T, week string) {
 	script, _ := filepath.Abs("../scripts/conformance.sh")
 	if _, err := exec.LookPath("warcio"); err != nil {
 		if os.Getenv("HOARFROST_CONFORMANCE") == "required" {
@@ -430,7 +445,7 @@ func conformance(t *testing.T, pkg string) {
 		t.Log("warcio not installed, skipping conformance suite")
 		return
 	}
-	out, err := exec.Command("bash", script, pkg).CombinedOutput()
+	out, err := exec.Command("bash", script, week).CombinedOutput()
 	if err != nil {
 		t.Fatalf("conformance suite failed: %v\n%s", err, out)
 	}
@@ -446,28 +461,37 @@ func assertNoBlockedDomains(t *testing.T, storageURL string, ep epoch.ID) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := storage.ReadAll(ctx, s, ep.WeeklyKey())
+	objs, err := s.List(ctx, ep.VolumeDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := wacz.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines, _ := r.CDXJ()
-	for _, l := range lines {
-		if strings.Contains(l.URL, "doubleclick") || strings.Contains(l.URL, "youtube") {
-			t.Fatalf("blocked domain in the archive: %s", l.URL)
-		}
-	}
-	offsets, _ := r.WARCOffsets()
 	withVersion := 0
-	for name := range offsets {
-		sec, _ := r.Entry(wacz.ArchiveDir + name)
-		rd := warcio.NewReader(sec)
-		info, _, _, err := rd.Next()
-		if err == nil && bytes.Contains(info.Block, []byte("blocklist: ")) {
-			withVersion++
+	for _, o := range objs {
+		if !strings.HasSuffix(o.Key, ".wacz") {
+			continue
+		}
+		data, err := storage.ReadAll(ctx, s, o.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := wacz.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines, _ := r.CDXJ()
+		for _, l := range lines {
+			if strings.Contains(l.URL, "doubleclick") || strings.Contains(l.URL, "youtube") {
+				t.Fatalf("blocked domain in the archive: %s", l.URL)
+			}
+		}
+		offsets, _ := r.WARCOffsets()
+		for name := range offsets {
+			sec, _ := r.Entry(wacz.ArchiveDir + name)
+			rd := warcio.NewReader(sec)
+			info, _, _, err := rd.Next()
+			if err == nil && bytes.Contains(info.Block, []byte("blocklist: ")) {
+				withVersion++
+			}
 		}
 	}
 	if withVersion == 0 {

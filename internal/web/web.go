@@ -103,7 +103,7 @@ func (s *Server) Handler() http.Handler {
 	viewer("GET /page/{id}/preview", s.preview)
 	viewer("GET /replay/{id}", s.replayPage)
 	viewer("GET /replay/sw.js", s.replayWorker)
-	reader("GET /wacz/{storage}/{year}/{week}", s.serveWACZ)
+	reader("GET /wacz/{storage}/{path...}", s.serveWACZ)
 	viewer("GET /account", s.accountPage)
 	viewer("POST /account/tokens", s.createToken)
 	viewer("POST /account/tokens/{id}/delete", s.deleteToken)

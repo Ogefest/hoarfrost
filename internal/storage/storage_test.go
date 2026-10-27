@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -311,5 +312,55 @@ func TestS3CreateWaitsUntilVisible(t *testing.T) {
 	err = write("weekly/2026/W44.wacz")
 	if !errors.Is(err, storage.ErrNotExist) || !strings.Contains(err.Error(), "etag") {
 		t.Fatalf("object never shown: %v", err)
+	}
+}
+
+// requestLog counts requests by method and multipart operation.
+type requestLog struct {
+	mu  sync.Mutex
+	ops map[string]int
+}
+
+func (c *requestLog) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	op := r.Method
+	if r.URL.Query().Has("uploads") || r.URL.Query().Has("uploadId") {
+		op += " multipart"
+	}
+	c.ops[op]++
+	c.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TestS3PutFileInOneRequest: a file (a volume built locally) is stored with
+// one PUT request, never as a multipart upload the server must assemble.
+func TestS3PutFileInOneRequest(t *testing.T) {
+	backend := s3mem.New()
+	srv := httptest.NewServer(gofakes3.New(backend).Server())
+	t.Cleanup(srv.Close)
+	backend.CreateBucket("archive")
+	u, _ := url.Parse(srv.URL)
+	tr := &requestLog{ops: map[string]int{}}
+	s, err := storage.NewS3(context.Background(), storage.S3Config{
+		Endpoint: u.Host, Bucket: "archive", Region: "us-east-1", AccessKey: "key", SecretKey: "secret", PathStyle: true, Transport: tr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("0123456789abcdef"), 3<<20) // 48 MiB, above the multipart threshold
+	p := filepath.Join(t.TempDir(), "volume.wacz")
+	os.WriteFile(p, data, 0o644)
+	f, _ := os.Open(p)
+	defer f.Close()
+	tr.ops = map[string]int{}
+	if err := s.Put(context.Background(), "weekly/2026/W43/2026-W43-0001.wacz", f, int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	if tr.ops["PUT"] != 1 || tr.ops["POST multipart"]+tr.ops["PUT multipart"] != 0 {
+		t.Fatalf("requests %v", tr.ops)
+	}
+	got, err := storage.ReadAll(context.Background(), s, "weekly/2026/W43/2026-W43-0001.wacz")
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read back %d bytes: %v", len(got), err)
 	}
 }

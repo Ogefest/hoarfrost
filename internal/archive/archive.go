@@ -34,6 +34,10 @@ type Archive struct {
 	IncomingRetention time.Duration
 	// ConcatBySource joins captures of one source into a single WARC file.
 	ConcatBySource bool
+	// VolumeSize bounds the capture bytes of one volume of a week
+	// (DefaultVolumeSize when 0). A volume is built in SpoolDir and stored
+	// with one request, so SpoolDir needs about this much free space.
+	VolumeSize int64
 
 	mu      sync.Mutex
 	readers map[string]*list.Element
@@ -48,6 +52,16 @@ func New(st storage.Storage, idx *index.DB, spool string, log *slog.Logger) *Arc
 	}
 	return &Archive{Storage: st, Index: idx, SpoolDir: spool, Log: log, Now: time.Now,
 		IncomingRetention: 30 * 24 * time.Hour, readers: map[string]*list.Element{}, lru: list.New()}
+}
+
+// DefaultVolumeSize is the default capture bytes of one volume of a week.
+const DefaultVolumeSize = 4 << 30
+
+func (a *Archive) volumeSize() int64 {
+	if a.VolumeSize > 0 {
+		return a.VolumeSize
+	}
+	return DefaultVolumeSize
 }
 
 type cachedReader struct {

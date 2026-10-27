@@ -199,9 +199,20 @@ func TestFromEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e.Storage != "file:///var/lib/hoarfrost/archive" || e.SealGrace != 2*time.Hour || e.Retention != 14*24*time.Hour ||
-		e.Workers != 4 {
+		e.Workers != 4 || e.VolumeSize != 4<<30 {
 		t.Fatalf("%+v", e)
 	}
+	t.Setenv("HOARFROST_VOLUME_SIZE", "2GB")
+	if e, err := FromEnvironment(); err != nil || e.VolumeSize != 2<<30 {
+		t.Fatalf("volume size %d %v", e.VolumeSize, err)
+	}
+	for _, bad := range []string{"lots", "6GiB"} {
+		t.Setenv("HOARFROST_VOLUME_SIZE", bad)
+		if _, err := FromEnvironment(); err == nil {
+			t.Fatalf("volume size %s accepted", bad)
+		}
+	}
+	t.Setenv("HOARFROST_VOLUME_SIZE", "")
 	if e.RequireSecret() == nil {
 		t.Fatal("empty secret accepted")
 	}

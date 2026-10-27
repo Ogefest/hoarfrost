@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Exit test (see docs/architecture.md, "Verifying there is no lock-in"): read the archive as if hoarfrost no longer
 # existed, using only standard tools: rclone (or a local path), unzip, dd,
-# gunzip, grep, warcio and pywb. No hoarfrost code is used.
+# gunzip, grep, sha256sum, warcio and pywb. No hoarfrost code is used.
+#
+# A week is stored as WACZ volumes in weekly/<year>/W<week>/ (weeks sealed
+# before volumes: one weekly/<year>/W<week>.wacz). The whole week is
+# loaded, as a revisit in one volume may point to a record in another.
 #
 # Usage: scripts/exit-test.sh <storage> [export.html]
 #   <storage>   local archive root, or an rclone remote such as s3remote:bucket/prefix
@@ -14,24 +18,41 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 step() { echo "== $*"; }
 
-step "1. pick a random weekly package"
+step "1. pick a random week and fetch its packages"
+mkdir -p "$work/week"
 if [[ -d "$src" ]]; then
-  pkgs=$(cd "$src" && ls weekly/*/*.wacz)
-  pick=$(shuf -n1 <<<"$pkgs")
-  cp "$src/$pick" "$work/week.wacz"
-  [[ -f "$src/$pick.sha256" ]] && cp "$src/$pick.sha256" "$work/week.wacz.sha256"
+  # A week's directory is complete once SHA256SUMS is written.
+  weeks=$(cd "$src" && { ls weekly/*/W*/SHA256SUMS 2>/dev/null | sed 's#SHA256SUMS$##'; ls weekly/*/W*.wacz 2>/dev/null; } || true)
 else
-  pick=$(rclone lsf -R --files-only --include '*.wacz' "$src/weekly" | shuf -n1)
-  rclone copyto "$src/weekly/$pick" "$work/week.wacz"
+  weeks=$(rclone lsf -R --files-only --include 'SHA256SUMS' "$src/weekly" | grep -E '^[0-9]{4}/W[0-9]{2}/SHA256SUMS$' | sed 's#SHA256SUMS$##; s#^#weekly/#' || true)
+  weeks+=$'\n'$(rclone lsf -R --files-only --include '*.wacz' "$src/weekly" | grep -E '^[0-9]{4}/W[0-9]{2}\.wacz$' | sed 's#^#weekly/#' || true)
 fi
-echo "package: $pick"
-if [[ -f "$work/week.wacz.sha256" ]]; then
-  (cd "$work" && sed "s/ .*/  week.wacz/" week.wacz.sha256 | sha256sum -c -)
+pick=$(grep -v '^$' <<<"$weeks" | shuf -n1)
+[[ -n "$pick" ]] || { echo "no sealed week in $src" >&2; exit 1; }
+if [[ -d "$src" ]]; then
+  if [[ "$pick" == */ ]]; then
+    cp "$src/$pick"* "$work/week/"
+  else
+    cp "$src/$pick" "$work/week/"
+    if [[ -f "$src/$pick.sha256" ]]; then cp "$src/$pick.sha256" "$work/week/"; fi
+  fi
+else
+  if [[ "$pick" == */ ]]; then rclone copy "$src/$pick" "$work/week"; else rclone copy "$src/$(dirname "$pick")" "$work/week" --include "$(basename "$pick")*"; fi
 fi
+echo "week: $pick"
+ls -l "$work/week"
+(
+  cd "$work/week"
+  if [[ -f SHA256SUMS ]]; then sha256sum -c SHA256SUMS; else for s in *.sha256; do [[ -f "$s" ]] && sha256sum -c "$s"; done; fi
+)
+packages=("$work"/week/*.wacz)
 
 step "2. list contents and articles"
-unzip -l "$work/week.wacz"
-unzip -p "$work/week.wacz" pages/pages.jsonl > "$work/pages.jsonl"
+: > "$work/pages.jsonl"
+for p in "${packages[@]}"; do
+  unzip -l "$p"
+  unzip -p "$p" pages/pages.jsonl >> "$work/pages.jsonl"
+done
 grep -o '"url":"[^"]*","[^}]*"title":"[^"]*"' "$work/pages.jsonl" | head -20 || true
 if [[ -n "$compare" ]]; then
   wanted=$(grep -o '<title>[^<]*</title>' "$compare" | head -1 | sed -E 's#</?title>##g')
@@ -45,22 +66,27 @@ title=$(sed -E 's/.*"title":"([^"]*)".*/\1/' <<<"$article")
 echo "article: $title <$url>"
 
 step "3. find the record in index.cdxj and cut it out with dd"
-line=$(unzip -p "$work/week.wacz" indexes/index.cdxj | grep -F "\"url\":\"$url\"" | grep -E '"(mime)":"text/html"' | head -1)
+line="" pkg=""
+for p in "${packages[@]}"; do
+  line=$(unzip -p "$p" indexes/index.cdxj | grep -F "\"url\":\"$url\"" | grep -E '"(mime)":"text/html"' | head -1 || true)
+  if [[ -n "$line" ]]; then pkg=$p; break; fi
+done
+[[ -n "$line" ]] || { echo "article not found in any index.cdxj" >&2; exit 1; }
 offset=$(sed -E 's/.*"offset":"([0-9]+)".*/\1/' <<<"$line")
 length=$(sed -E 's/.*"length":"([0-9]+)".*/\1/' <<<"$line")
 file=$(sed -E 's/.*"filename":"([^"]+)".*/\1/' <<<"$line")
-unzip -p "$work/week.wacz" "archive/$file" > "$work/file.warc.gz"
+unzip -p "$pkg" "archive/$file" > "$work/file.warc.gz"
 dd if="$work/file.warc.gz" of="$work/record.warc.gz" bs=1 skip="$offset" count="$length" status=none
 gunzip -c "$work/record.warc.gz" > "$work/record.warc"
 grep -q "WARC-Target-URI: $url" "$work/record.warc"
 grep -qF "$title" <(gunzip -c "$work/record.warc.gz" | warcio extract --payload /dev/stdin 0 2>/dev/null || cat "$work/record.warc")
 warcio check "$work/record.warc.gz"
-echo "record found at $file:$offset ($length bytes)"
+echo "record found in $(basename "$pkg") at $file:$offset ($length bytes)"
 
-step "4. replay with pywb"
+step "4. replay the week with pywb"
 (
   cd "$work"
-  unzip -q week.wacz 'archive/*' -d pkg
+  for p in "${packages[@]}"; do unzip -q -o "$p" 'archive/*' -d pkg; done
   wb-manager init exit >/dev/null
   wb-manager add exit pkg/archive/*.warc.gz >/dev/null
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -71,7 +97,7 @@ step "4. replay with pywb"
   curl -sf "http://127.0.0.1:$port/exit/mp_/$url" > replay.html
   grep -qF "$title" replay.html
 )
-echo "pywb replays the article"
+echo "pywb replays the article from the ${#packages[@]} package(s) of the week"
 
 step "5. compare with the application's export"
 if [[ -n "$compare" ]]; then

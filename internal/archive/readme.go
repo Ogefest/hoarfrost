@@ -28,11 +28,21 @@ needed to read it is described here; the application is not required.
                                              (removed some time after the week is packaged)
     incoming/<year>/W<week>/<ts>-<source>-<id>.cdxj
                                              CDXJ index of the WARC file next to it
-    weekly/<year>/W<week>.wacz               weekly package (permanent)
-    weekly/<year>/W<week>.wacz.sha256        SHA-256 of the package (sha256sum format)
+    weekly/<year>/W<week>/<year>-W<week>-<n>.wacz
+                                             the week's packages (volumes of a bounded size, permanent)
+    weekly/<year>/W<week>/<year>-W<week>-<n>.captures.jsonl
+                                             capture files in the volume: offset, size, SHA-256
+    weekly/<year>/W<week>/SHA256SUMS         SHA-256 of every volume (sha256sum format)
+    weekly/<year>/W<week>/collection.json    multi-WACZ collection of the volumes (ReplayWeb.page)
     weekly/<year>/W<week>.parquet            page table of the week (Apache Parquet)
-    weekly/<year>/W<week>.captures.jsonl     capture files in the package: offset, size, SHA-256
-    catalog/<year>/W<week>.json              package status: counts, hash, verification
+    catalog/<year>/W<week>.json              week status: volumes, counts, hashes, verification
+
+Weeks sealed before volumes have one package instead:
+weekly/<year>/W<week>.wacz with W<week>.wacz.sha256 and W<week>.captures.jsonl.
+
+A week is the unit: load all its volumes together (see "Epochs and
+deduplication"). Every volume is a complete WACZ package with its own
+indexes and pages list; a capture file is never split between volumes.
 
 ## Formats
 
@@ -49,14 +59,14 @@ needed to read it is described here; the application is not required.
 
 ## Page table
 
-weekly/<year>/W<week>.parquet lists every page of the package, one row per
+weekly/<year>/W<week>.parquet lists every page of the week, one row per
 capture, sorted by url and capture time (row groups of 10000 rows carry
 min/max statistics and a bloom filter on url): url, captured, title,
 description, published, authors, schema_types, schema_org (JSON array of the
 schema.org objects found as JSON-LD, microdata or RDFa), open_graph (JSON
 object of Open Graph and Twitter Card properties), microformats (JSON array
 of microformats2 items), keywords, source, kind, mime,
-status, text_length, warc_file (file in the package's archive/ directory),
+status, text_length, warc_file (file in a volume's archive/ directory),
 record_id and metadata_id. Its SHA-256 is in the catalog. Any Parquet reader
 works, e.g. DuckDB:
 
@@ -68,7 +78,12 @@ An epoch is one ISO week. Identical payloads within a week are stored once;
 later copies are WARC "revisit" records (profile identical-payload-digest)
 that point to the original by WARC-Refers-To (record id),
 WARC-Refers-To-Target-URI and WARC-Refers-To-Date. A revisit never points
-outside its week, so every weekly package is self-contained.
+outside its week, but it may point into another volume of the week: the
+volumes of a week together are self-contained. For pywb, add the WARC
+files of all volumes of the week to one collection:
+
+    for v in 2026-W41-*.wacz; do unzip -o "$v" 'archive/*' -d w41; done
+    wb-manager init w41 && wb-manager add w41 w41/archive/*.warc.gz
 
 Until a week is packaged, its WARC files and their .cdxj indexes in
 incoming/<year>/W<week>/ together form a complete collection: a revisit is
@@ -85,25 +100,27 @@ engine and resource counts.
 
 ## Verifying integrity
 
-    sha256sum -c W41.wacz.sha256
-    unzip -l W41.wacz                  # every entry must be "Stored"
-    unzip -p W41.wacz datapackage.json # SHA-256 of each entry
+    cd weekly/2026/W41 && sha256sum -c SHA256SUMS
+    unzip -l 2026-W41-0001.wacz                  # every entry must be "Stored"
+    unzip -p 2026-W41-0001.wacz datapackage.json # SHA-256 of each entry
 
-W41.captures.jsonl lists every capture file of the week with the absolute
-offset of its first byte in the package, its size and its SHA-256, taken
-when it was read from incoming/: the bytes at that offset must hash to it.
+2026-W41-0001.captures.jsonl lists every capture file of the volume with
+the absolute offset of its first byte in the volume, its size and its
+SHA-256, taken when it was read from incoming/: the bytes at that offset
+must hash to it. Together the lists name every capture file of the week.
 
 Hashes are for fixity checks only and are not legal evidence.
 
 ## Reading an article without the application
 
-    unzip -p W41.wacz pages/pages.jsonl | grep -i 'keyword'      # find the page
-    unzip -p W41.wacz indexes/index.cdxj | grep '<SURT of URL>'  # locate the record
-    unzip -l -v W41.wacz                                         # data offset of archive/<file>
-    dd if=W41.wacz bs=1 skip=$((DATA_OFFSET + OFFSET)) count=LENGTH | gunzip
+    for v in *.wacz; do unzip -p $v pages/pages.jsonl | grep -i 'keyword' && echo $v; done   # find the page
+    unzip -p 2026-W41-0003.wacz indexes/index.cdxj | grep '<SURT of URL>'  # locate the record
+    unzip -l -v 2026-W41-0003.wacz                                         # data offset of archive/<file>
+    dd if=2026-W41-0003.wacz bs=1 skip=$((DATA_OFFSET + OFFSET)) count=LENGTH | gunzip
 
-Any WARC tool works as well: "warcio extract", pywb ("wb-manager add"),
-ReplayWeb.page (load the .wacz file directly).
+Any WARC tool works as well: "warcio extract", pywb ("wb-manager add" with
+the WARC files of all volumes of the week), ReplayWeb.page (load
+collection.json of the week, or a single .wacz file).
 `))
 
 // WriteReadme stores README.md when its content changed.

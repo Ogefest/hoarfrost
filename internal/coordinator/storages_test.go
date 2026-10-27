@@ -192,7 +192,7 @@ func TestMultipleStorages(t *testing.T) {
 		if cat.State != index.StateVerified {
 			t.Fatalf("%s: %+v", name, cat.Verification)
 		}
-		if _, err := m.storages[name].Stat(ctx, ep.WeeklyKey()); err != nil {
+		if _, err := m.storages[name].Stat(ctx, ep.VolumeKey(1)); err != nil {
 			t.Fatalf("%s package missing", name)
 		}
 		if _, err := m.storages[name].Stat(ctx, archive.ReadmeKey); err == nil {

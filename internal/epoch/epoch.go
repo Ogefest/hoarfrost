@@ -4,6 +4,7 @@ package epoch
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -80,14 +81,35 @@ func (id ID) path() string {
 // IncomingPrefix is the storage prefix for working capture files.
 func (id ID) IncomingPrefix() string { return "incoming/" + id.path() + "/" }
 
-// WeeklyKey is the storage key of the sealed WACZ package.
+// WeeklyKey is the storage key of the single WACZ package of weeks sealed
+// before packages were split into volumes.
 func (id ID) WeeklyKey() string { return "weekly/" + id.path() + ".wacz" }
+
+// VolumeDir is the storage prefix of the week's volumes: WACZ packages of
+// a bounded size that together hold the week.
+func (id ID) VolumeDir() string { return "weekly/" + id.path() + "/" }
+
+// VolumeKey is the storage key of volume n (from 1) of the week.
+func (id ID) VolumeKey(n int) string { return fmt.Sprintf("%s%s-%04d.wacz", id.VolumeDir(), id, n) }
+
+// VolumeCapturesKey is the storage key of the captures list of volume n.
+func (id ID) VolumeCapturesKey(n int) string {
+	return strings.TrimSuffix(id.VolumeKey(n), ".wacz") + ".captures.jsonl"
+}
+
+// SumsKey is the storage key of the SHA256SUMS file of the week's volumes.
+func (id ID) SumsKey() string { return id.VolumeDir() + "SHA256SUMS" }
+
+// CollectionKey is the storage key of the multi-WACZ collection listing
+// the week's volumes (opened as one archive by ReplayWeb.page).
+func (id ID) CollectionKey() string { return id.VolumeDir() + "collection.json" }
 
 // ParquetKey is the storage key of the page table of a sealed epoch.
 func (id ID) ParquetKey() string { return "weekly/" + id.path() + ".parquet" }
 
 // CapturesKey is the storage key of the list of capture files packaged
-// into the sealed WACZ package, with their places and digests.
+// into the single package of a week sealed before volumes (see
+// VolumeCapturesKey).
 func (id ID) CapturesKey() string { return "weekly/" + id.path() + ".captures.jsonl" }
 
 // ChecksumKey is the storage key of the package's sha256 file.

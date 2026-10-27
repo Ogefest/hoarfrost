@@ -74,3 +74,18 @@ func TestKeys(t *testing.T) {
 		t.Error("FromKey accepted config key")
 	}
 }
+
+func TestVolumeKeys(t *testing.T) {
+	ep := MustParse("2026-W43")
+	if got := ep.VolumeKey(7); got != "weekly/2026/W43/2026-W43-0007.wacz" {
+		t.Fatal(got)
+	}
+	if got := ep.VolumeCapturesKey(7); got != "weekly/2026/W43/2026-W43-0007.captures.jsonl" {
+		t.Fatal(got)
+	}
+	for _, k := range []string{ep.VolumeKey(1), ep.SumsKey(), ep.CollectionKey()} {
+		if got, ok := FromKey(k); !ok || got != ep {
+			t.Fatalf("%s: %s %v", k, got, ok)
+		}
+	}
+}

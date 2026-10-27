@@ -14,6 +14,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/recorder"
+	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/wacz"
 )
 
@@ -32,6 +33,9 @@ type ReindexReport struct {
 	Epochs   []epoch.ID
 	Captures int
 	Scanned  []epoch.ID // sealed epochs rebuilt by scanning WARC data
+	// Missing are sealed epochs with a package missing from storage; they
+	// are marked failed, not rebuilt.
+	Missing []epoch.ID
 }
 
 // Reindex rebuilds missing or inconsistent parts of the index from storage.
@@ -43,10 +47,29 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 		return nil, err
 	}
 	sealed := map[epoch.ID]*Catalog{}
+	rep := &ReindexReport{}
 	for _, c := range cats {
-		if _, err := a.Storage.Stat(ctx, c.Package); err == nil {
-			sealed[c.Epoch] = c
+		missing, err := a.missingPackage(ctx, c)
+		if err != nil {
+			return nil, err
 		}
+		if missing == "" {
+			sealed[c.Epoch] = c
+			continue
+		}
+		// A sealed week whose package is gone is not rebuilt from incoming/
+		// as if it were open: it is reported as failed.
+		a.Log.Error("package of a sealed week missing from storage", "epoch", c.Epoch, "package", missing)
+		rep.Missing = append(rep.Missing, c.Epoch)
+		info := c.epochInfo(a.name())
+		info.State, info.Error = index.StateFailed, missing+": missing from storage"
+		if err := a.Index.SetEpoch(ctx, info); err != nil {
+			return nil, err
+		}
+	}
+	missingWeek := map[epoch.ID]bool{}
+	for _, ep := range rep.Missing {
+		missingWeek[ep] = true
 	}
 	incoming, err := a.Storage.List(ctx, "incoming/")
 	if err != nil {
@@ -55,7 +78,7 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 	open := map[epoch.ID][]string{}
 	for _, o := range incoming {
 		ep, ok := epoch.FromKey(o.Key)
-		if !ok || !strings.HasSuffix(o.Key, ".warc.gz") || sealed[ep] != nil {
+		if !ok || !strings.HasSuffix(o.Key, ".warc.gz") || sealed[ep] != nil || missingWeek[ep] {
 			continue
 		}
 		open[ep] = append(open[ep], o.Key)
@@ -73,7 +96,6 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 		eps = filterEpoch(eps, opts.Epoch)
 	}
 
-	rep := &ReindexReport{}
 	for i, ep := range eps {
 		if err := ctx.Err(); err != nil {
 			return rep, err
@@ -83,7 +105,7 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 			if err != nil {
 				return rep, err
 			}
-			if opts.Force || info.SHA256 != c.SHA256 || info.WACZKey != c.Package {
+			if opts.Force || info.SHA256 != c.SHA256 || info.WACZKey != c.Location() {
 				scanned, err := a.reindexSealed(ctx, c)
 				if err != nil {
 					return rep, fmt.Errorf("archive: reindex %s: %w", ep, err)
@@ -159,8 +181,42 @@ func (a *Archive) reindexOpen(ctx context.Context, ep epoch.ID, keys []string, f
 	return n, nil
 }
 
+// missingPackage returns a package of a sealed week that is not in
+// storage, or "" when all are.
+func (a *Archive) missingPackage(ctx context.Context, c *Catalog) (string, error) {
+	pkgs := c.Packages()
+	if len(pkgs) == 0 {
+		return c.Epoch.CatalogKey() + " lists no package", nil
+	}
+	for _, p := range pkgs {
+		if _, err := a.Storage.Stat(ctx, p.Key); errors.Is(err, storage.ErrNotExist) {
+			return p.Key, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// reindexSealed rebuilds the index of a sealed week package by package,
+// so memory holds the records of one package at a time. The week's state
+// is set last: an interrupted rebuild is repeated on the next run.
 func (a *Archive) reindexSealed(ctx context.Context, c *Catalog) (scanned bool, err error) {
-	rd, err := a.Storage.Open(ctx, c.Package)
+	if err := a.Index.DeleteEpoch(ctx, a.name(), c.Epoch); err != nil {
+		return false, err
+	}
+	for _, p := range c.Packages() {
+		s, err := a.reindexPackage(ctx, c.Epoch, p.Key)
+		scanned = scanned || s
+		if err != nil {
+			return scanned, fmt.Errorf("%s: %w", p.Key, err)
+		}
+	}
+	return scanned, a.Index.SetEpoch(ctx, c.epochInfo(a.name()))
+}
+
+func (a *Archive) reindexPackage(ctx context.Context, ep epoch.ID, key string) (scanned bool, err error) {
+	rd, err := a.Storage.Open(ctx, key)
 	if err != nil {
 		return false, err
 	}
@@ -169,33 +225,20 @@ func (a *Archive) reindexSealed(ctx context.Context, c *Catalog) (scanned bool, 
 	if err != nil {
 		return false, err
 	}
-	recs, pages, err := fromPackageIndex(pkg, c, a.name())
+	recs, pages, err := fromPackageIndex(pkg, ep, key, a.name())
 	if err != nil {
-		a.Log.Warn("package index unusable, scanning WARC data", "epoch", c.Epoch, "err", err)
+		a.Log.Warn("package index unusable, scanning WARC data", "epoch", ep, "package", key, "err", err)
 		scanned = true
-		if recs, pages, err = fromPackageScan(pkg, c, a.name()); err != nil {
+		if recs, pages, err = fromPackageScan(pkg, ep, key, a.name()); err != nil {
 			return true, err
 		}
 	}
-	if err := a.Index.DeleteEpoch(ctx, a.name(), c.Epoch); err != nil {
-		return scanned, err
-	}
-	if err := a.Index.AddRecords(ctx, recs, pages); err != nil {
-		return scanned, err
-	}
-	info := index.EpochInfo{Storage: a.name(), Epoch: c.Epoch, State: c.State, WACZKey: c.Package, SHA256: c.SHA256, Size: c.Size, SealedAt: c.SealedAt}
-	if c.Verification != nil {
-		info.VerifiedAt = c.Verification.At
-		if !c.Verification.OK && len(c.Verification.Problems) > 0 {
-			info.Error = c.Verification.Problems[0].Path + ": " + c.Verification.Problems[0].Message
-		}
-	}
-	return scanned, a.Index.SetEpoch(ctx, info)
+	return scanned, a.Index.AddRecords(ctx, recs, pages)
 }
 
 var errNoRecordIDs = errors.New("index lacks record ids")
 
-func fromPackageIndex(pkg *wacz.Reader, c *Catalog, storageName string) ([]index.Record, []index.PageRow, error) {
+func fromPackageIndex(pkg *wacz.Reader, ep epoch.ID, key, storageName string) ([]index.Record, []index.PageRow, error) {
 	lines, err := pkg.CDXJ()
 	if err != nil {
 		return nil, nil, err
@@ -227,9 +270,9 @@ func fromPackageIndex(pkg *wacz.Reader, c *Catalog, storageName string) ([]index
 		}
 		status, _ := strconv.Atoi(l.Status)
 		recs = append(recs, index.Record{
-			ID: l.RecordID, Storage: storageName, Epoch: c.Epoch, URI: l.URL, Date: l.Timestamp, Type: l.Type, Mime: l.Mime,
+			ID: l.RecordID, Storage: storageName, Epoch: ep, URI: l.URL, Date: l.Timestamp, Type: l.Type, Mime: l.Mime,
 			Status: status, Digest: l.Digest, RefersTo: l.RefersTo,
-			Location: c.Package, Offset: base + off, Length: n, File: l.Filename,
+			Location: key, Offset: base + off, Length: n, File: l.Filename,
 		})
 	}
 	pages := make([]index.PageRow, 0, len(pageLines))
@@ -238,13 +281,13 @@ func fromPackageIndex(pkg *wacz.Reader, c *Catalog, storageName string) ([]index
 		if p.MetadataID == "" || p.MetaLength == 0 || !ok {
 			return nil, nil, errors.New("pages lack metadata record positions")
 		}
-		pages = append(pages, index.PageRow{Storage: storageName, Epoch: c.Epoch, File: p.Filename, Location: c.Package,
+		pages = append(pages, index.PageRow{Storage: storageName, Epoch: ep, File: p.Filename, Location: key,
 			Page: recorder.CapturedPage{MetadataID: p.MetadataID, Offset: base + p.MetaOffset, Length: p.MetaLength, PageInfo: p.PageInfo}})
 	}
 	return recs, pages, nil
 }
 
-func fromPackageScan(pkg *wacz.Reader, c *Catalog, storageName string) ([]index.Record, []index.PageRow, error) {
+func fromPackageScan(pkg *wacz.Reader, ep epoch.ID, key, storageName string) ([]index.Record, []index.PageRow, error) {
 	offsets, err := pkg.WARCOffsets()
 	if err != nil {
 		return nil, nil, err
@@ -261,7 +304,7 @@ func fromPackageScan(pkg *wacz.Reader, c *Catalog, storageName string) ([]index.
 		if err != nil {
 			return nil, nil, err
 		}
-		cf, err := recorder.Scan(sec, name, c.Epoch)
+		cf, err := recorder.Scan(sec, name, ep)
 		if err != nil {
 			return nil, nil, fmt.Errorf("scan %s: %w", name, err)
 		}
@@ -274,14 +317,14 @@ func fromPackageScan(pkg *wacz.Reader, c *Catalog, storageName string) ([]index.
 				mime = index.RevisitMime
 			}
 			recs = append(recs, index.Record{
-				ID: r.ID, Storage: storageName, Epoch: c.Epoch, URI: r.URI, Date: r.Date, Type: r.Type, Mime: mime, Status: r.Status,
-				Digest: r.Digest, RefersTo: r.RefersTo, Location: c.Package, Offset: offsets[name] + r.Offset,
+				ID: r.ID, Storage: storageName, Epoch: ep, URI: r.URI, Date: r.Date, Type: r.Type, Mime: mime, Status: r.Status,
+				Digest: r.Digest, RefersTo: r.RefersTo, Location: key, Offset: offsets[name] + r.Offset,
 				Length: r.Length, File: name,
 			})
 		}
 		for _, p := range cf.Pages {
 			p.Offset += offsets[name]
-			pages = append(pages, index.PageRow{Storage: storageName, Epoch: c.Epoch, File: name, Location: c.Package, Page: p})
+			pages = append(pages, index.PageRow{Storage: storageName, Epoch: ep, File: name, Location: key, Page: p})
 		}
 	}
 	return recs, pages, nil

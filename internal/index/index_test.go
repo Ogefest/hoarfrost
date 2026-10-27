@@ -217,18 +217,19 @@ func TestRelocateAndEpochs(t *testing.T) {
 	db := openDB(t)
 	fixture(t, db)
 	ctx := context.Background()
-	const pkg = "weekly/2026/W41.wacz"
-	a := CaptureMove{From: "incoming/2026/W41/a.warc.gz", Name: "a.warc.gz", Shift: 4900, File: "serwis.warc.gz"}
-	b := CaptureMove{From: "incoming/2026/W41/b.warc.gz", Name: "b.warc.gz", Shift: 9000, File: "serwis.warc.gz"}
-	c := CaptureMove{From: "incoming/2026/W41/c.warc.gz", Name: "c.warc.gz", Shift: 12000, File: "inny.warc.gz"}
-	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b}); err == nil || !strings.Contains(err.Error(), "1 record(s)") {
+	const pkg = "weekly/2026/W41/2026-W41-0001.wacz"
+	const pkg2 = "weekly/2026/W41/2026-W41-0002.wacz"
+	a := CaptureMove{From: "incoming/2026/W41/a.warc.gz", To: pkg, Name: "a.warc.gz", Shift: 4900, File: "serwis.warc.gz"}
+	b := CaptureMove{From: "incoming/2026/W41/b.warc.gz", To: pkg, Name: "b.warc.gz", Shift: 9000, File: "serwis.warc.gz"}
+	c := CaptureMove{From: "incoming/2026/W41/c.warc.gz", To: pkg2, Name: "c.warc.gz", Shift: 12000, File: "inny.warc.gz"}
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", []CaptureMove{a, b}); err == nil || !strings.Contains(err.Error(), "1 record(s)") {
 		t.Fatalf("a capture left out must be reported: %v", err)
 	}
-	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b, c}); err != nil {
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", []CaptureMove{a, b, c}); err != nil {
 		t.Fatal(err)
 	}
 	// Running it again (an interrupted seal resumed) changes nothing.
-	if err := db.RelocateCaptures(ctx, "", "2026-W41", pkg, []CaptureMove{a, b, c}); err != nil {
+	if err := db.RelocateCaptures(ctx, "", "2026-W41", []CaptureMove{a, b, c}); err != nil {
 		t.Fatal(err)
 	}
 	r, _ := db.Record(ctx, "<r1>")
@@ -242,9 +243,15 @@ func TestRelocateAndEpochs(t *testing.T) {
 	if pages[0].File != "serwis.warc.gz" || pages[0].Location != pkg || pages[0].Offset != 4900 {
 		t.Fatalf("page %+v", pages[0])
 	}
-	cont, err := db.Contents(ctx, "", "2026-W41", pkg)
+	if r, _ := db.Record(ctx, "<r5>"); r.Location != pkg2 {
+		t.Fatalf("%+v", r)
+	}
+	cont, err := db.Contents(ctx, "", "2026-W41", []string{pkg, pkg2})
 	if err != nil || cont.Records != 5 || cont.RecordsElsewhere != 0 || cont.Pages != 3 || cont.PagesElsewhere != 0 {
 		t.Fatalf("contents %+v %v", cont, err)
+	}
+	if cont, _ := db.Contents(ctx, "", "2026-W41", []string{pkg}); cont.RecordsElsewhere == 0 {
+		t.Fatalf("records of the second package counted in the first: %+v", cont)
 	}
 	byID, err := db.RecordsByID(ctx, []string{"<r1>", "<r5>", "<nope>"})
 	if err != nil || len(byID) != 2 || byID["<r5>"].Offset != 12100 {

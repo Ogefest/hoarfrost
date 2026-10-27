@@ -49,17 +49,22 @@ type warcioEntry struct {
 	Digest string `json:"warc-payload-digest"`
 }
 
+// ourCDXJ returns the index lines of all volumes of the week.
 func ourCDXJ(t *testing.T, f *fixture) []cdxj.Line {
-	r, err := wacz.OpenFile(f.pkg)
-	if err != nil {
-		t.Fatal(err)
+	var all []cdxj.Line
+	for _, p := range f.pkgs {
+		r, err := wacz.OpenFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines, err := r.CDXJ()
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, lines...)
 	}
-	defer r.Close()
-	lines, err := r.CDXJ()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return lines
+	return all
 }
 
 // TestWarcioIndexMatchesCDXJ compares warcio's record positions with the
@@ -145,42 +150,48 @@ func TestCDXJIndexerAgrees(t *testing.T) {
 	}
 }
 
-// TestPyWACZValidate runs the reference WACZ validator.
+// TestPyWACZValidate runs the reference WACZ validator on every volume.
 func TestPyWACZValidate(t *testing.T) {
 	f := getFixture(t)
-	out := run(t, "wacz", "validate", "-f", f.pkg)
-	t.Logf("%s", out)
+	for _, p := range f.pkgs {
+		out := run(t, "wacz", "validate", "-f", p)
+		t.Logf("%s: %s", filepath.Base(p), out)
+	}
 }
 
-// TestZipAndChecksums checks with standard tools that every entry is stored
-// uncompressed and the sha256 file verifies.
+// TestZipAndChecksums checks with standard tools that every entry of every
+// volume is stored uncompressed, its index is sorted, and SHA256SUMS
+// verifies the volumes.
 func TestZipAndChecksums(t *testing.T) {
 	f := getFixture(t)
-	out := run(t, "zipinfo", "-l", f.pkg)
-	n := 0
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 8 && (strings.HasPrefix(fields[0], "-") || strings.HasPrefix(fields[0], "d")) {
-			n++
-			if fields[6] != "stor" {
-				t.Errorf("entry %s uses %s, must be stored", fields[len(fields)-1], fields[6])
+	for _, p := range f.pkgs {
+		out := run(t, "zipinfo", "-l", p)
+		n := 0
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 8 && (strings.HasPrefix(fields[0], "-") || strings.HasPrefix(fields[0], "d")) {
+				n++
+				if fields[6] != "stor" {
+					t.Errorf("%s: entry %s uses %s, must be stored", filepath.Base(p), fields[len(fields)-1], fields[6])
+				}
 			}
 		}
+		if n < 5 {
+			t.Fatalf("zipinfo listed %d entries:\n%s", n, out)
+		}
+		idx := run(t, "unzip", "-p", p, wacz.PathCDXJ)
+		sort := exec.Command(requireTool(t, "sort"), "-c")
+		sort.Env = append(os.Environ(), "LC_ALL=C")
+		sort.Stdin = bytes.NewReader(idx)
+		if out, err := sort.CombinedOutput(); err != nil {
+			t.Fatalf("%s: LC_ALL=C sort -c: %v\n%s", filepath.Base(p), err, out)
+		}
 	}
-	if n < 5 {
-		t.Fatalf("zipinfo listed %d entries:\n%s", n, out)
-	}
-	cmd := exec.Command(requireTool(t, "sha256sum"), "-c", filepath.Base(f.epoch.ChecksumKey()))
-	cmd.Dir = filepath.Join(f.root, filepath.Dir(f.epoch.WeeklyKey()))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("sha256sum -c: %v\n%s", err, out)
-	}
-	idx := run(t, "unzip", "-p", f.pkg, wacz.PathCDXJ)
-	sort := exec.Command(requireTool(t, "sort"), "-c")
-	sort.Env = append(os.Environ(), "LC_ALL=C")
-	sort.Stdin = bytes.NewReader(idx)
-	if out, err := sort.CombinedOutput(); err != nil {
-		t.Fatalf("LC_ALL=C sort -c: %v\n%s", err, out)
+	cmd := exec.Command(requireTool(t, "sha256sum"), "-c", "SHA256SUMS")
+	cmd.Dir = filepath.Join(f.root, filepath.FromSlash(f.epoch.VolumeDir()))
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.Count(string(out), ": OK") != len(f.pkgs) {
+		t.Fatalf("sha256sum -c SHA256SUMS: %v\n%s", err, out)
 	}
 }
 
@@ -246,9 +257,10 @@ func get(t *testing.T, url string) (int, []byte) {
 	return resp.StatusCode, b
 }
 
-// TestPywbReplay replays the archive with pywb: pages, a PDF byte for byte,
-// a redirect, and resources stored as revisits, which pywb must resolve to
-// the original payload using WARC-Refers-To / WARC-Payload-Digest.
+// TestPywbReplay replays the week with pywb from the WARC files of all its
+// volumes in one collection: pages, a PDF byte for byte, a redirect, and
+// resources stored as revisits in another volume than their original,
+// which pywb must resolve using WARC-Refers-To / WARC-Payload-Digest.
 func TestPywbReplay(t *testing.T) {
 	f := getFixture(t)
 	base := startPywb(t, f.warcs)
@@ -273,6 +285,9 @@ func TestPywbReplay(t *testing.T) {
 			continue
 		}
 		revisits++
+		if orig, err := f.idx.Record(ctx, r.RefersTo); err != nil || orig.Location == r.Location {
+			t.Fatalf("revisit %s should point into another volume: %+v %v", r.ID, orig, err)
+		}
 		ts := r.Date.UTC().Format("20060102150405")
 		code, body := get(t, base+"/"+ts+"id_/"+r.URI)
 		if code != http.StatusOK || !bytes.Equal(body, f.cssBody) {

@@ -141,8 +141,11 @@ correct, only slightly wasteful.
 
 - An epoch is an **ISO week** (`2026-W41`) of one storage.
 - Deduplication works only inside an epoch: a revisit can only point to a
-  record of the same week. Each weekly package is therefore self-contained:
-  it can be moved, verified, replayed or deleted independently.
+  record of the same week. Each week is therefore self-contained: its
+  volumes can be moved, verified, replayed or deleted together,
+  independently of other weeks. A revisit may point into another volume of
+  its week, so tools load a week as a whole (pywb: one collection of the
+  WARC files of all volumes; ReplayWeb.page: the week's `collection.json`).
 - A capture belongs to the epoch in which its job was **leased**, not to the
   timestamps of its records: a page started on Sunday at 23:59 belongs
   entirely to the ending week.
@@ -157,56 +160,74 @@ week, which is negligible compared to thousands of captures.
    writing is the page, not the resource: roughly a thousand objects a day,
    not tens of thousands.
 2. **Seal.** After the end of the week and the grace period
-   (`HOARFROST_SEAL_GRACE`), the week's files are packed into
-   `weekly/<year>/W<week>.wacz`.
-3. **Cleanup.** `incoming/` files are deleted only after the package has been
+   (`HOARFROST_SEAL_GRACE`), the week's files are packed into WACZ volumes
+   in `weekly/<year>/W<week>/`.
+3. **Cleanup.** `incoming/` files are deleted only after the week has been
    verified, and only after the retention period (`HOARFROST_INCOMING_RETENTION`).
 
 ### Sealing
 
 1. List `incoming/<year>/W<week>/` and compare it with the index.
-2. Stream the WACZ package (ZIP with every entry stored, ZIP64 when needed)
-   straight to `weekly/` (S3 multipart upload, or a temporary file renamed
-   into place on a filesystem): it becomes visible only when complete.
-   Every capture file is read once; its bytes are copied into the package
-   and scanned for the index on the way. The package holds:
-   - `archive/*.warc.gz` – the capture files, optionally concatenated per
-     source (concatenated gzip members are a valid `.warc.gz`);
-   - `indexes/index.cdxj` – sorted; large weeks use a ZipNum block index;
-   - `pages/pages.jsonl` – URL, title, time, source and extracted **text**;
-   - `datapackage.json` (SHA-256 of every entry) and `datapackage-digest.json`.
+2. Split the capture files, in package order, into **volumes** of at most
+   `HOARFROST_VOLUME_SIZE` bytes (default 4 GiB; a capture file is never
+   split, a larger one gets a volume of its own). For each volume:
+   - build the WACZ (ZIP with every entry stored, ZIP64 when needed) in the
+     spool directory. Every capture file is read once; its bytes are copied
+     into the volume and scanned for the index on the way. A volume holds:
+     - `archive/*.warc.gz` – the capture files, optionally concatenated per
+       source (`<source>-<n>.warc.gz`: concatenated gzip members are a valid
+       `.warc.gz`, and names are unique across the volumes of the week);
+     - `indexes/index.cdxj` – sorted; large volumes use a ZipNum block index;
+     - `pages/pages.jsonl` – URL, title, time, source and extracted **text**;
+     - `datapackage.json` (SHA-256 of every entry) and `datapackage-digest.json`;
+   - store it as `weekly/<year>/W<week>/<year>-W<week>-<n>.wacz` with **one
+     PUT request**: the server writes it as it arrives, with no multipart
+     upload to assemble (servers limit the parts of an upload, or take
+     minutes to complete a large one and may report success to a retried
+     request before it is done);
+   - store its **captures list** (`<year>-W<week>-<n>.captures.jsonl`):
+     every capture file with its absolute offset in the volume and the
+     SHA-256 of its bytes. The list marks the volume complete;
+   - remove the local file.
 
    Index and page lines are sorted in bounded memory through temporary
-   files in the spool directory (a few percent of the week, compressed).
-   Neither local disk nor memory grows with the size of the week: a
-   terabyte week needs the same machine as a gigabyte one.
-3. Write the `.sha256` file and the **captures list**
-   (`weekly/<year>/W<week>.captures.jsonl`): every capture file with its
-   absolute offset in the package and the SHA-256 of its bytes.
-4. Move the index to the package: the records and pages of a capture file
-   keep their offsets, shifted by where the file starts in the package.
-5. Write the Parquet page table and `catalog/<year>/W<week>.json`, then
-   verify the stored package (below) and record the result in the catalog.
+   files in the spool directory. Local disk holds one volume at a time and
+   memory does not grow with the size of the week: a terabyte week needs the
+   same machine as a gigabyte one.
+3. Move the index to the volumes: the records and pages of a capture file
+   keep their offsets, shifted by where the file starts in its volume.
+4. Write `SHA256SUMS` and `collection.json` (a multi-WACZ collection) of the
+   volumes, the Parquet page table and `catalog/<year>/W<week>.json`, then
+   verify the stored volumes (below) and record the result in the catalog.
 
-Every step after the upload can be repeated: a seal interrupted after the
-package and its captures list were stored resumes there; one interrupted
-earlier removes the partial package and starts over. `incoming/` files are
-removed only after verification, so nothing is lost by starting over.
+A seal interrupted while storing volumes keeps the volumes stored with
+their captures lists and continues with the next one; anything else in the
+week's directory (a volume stored without its list) is removed first, as
+the index points into volumes only after all are stored. Every later step
+can be repeated. `incoming/` files are removed only after verification, so
+nothing is lost by starting over.
+
+Weeks sealed before volumes keep their single package
+`weekly/<year>/W<week>.wacz` with `W<week>.wacz.sha256` and
+`W<week>.captures.jsonl`; they are read, verified and reindexed like a week
+of one volume.
 
 ### Verification
 
-Verification reads the stored package once from start to end and proves
-that nothing was lost between `incoming/` and the package:
+Verification reads every stored volume once from start to end and proves
+that nothing was lost between `incoming/` and the volumes:
 
-- the package matches its SHA-256 (catalog and `.sha256` file), and every
-  entry matches `datapackage.json`;
-- every capture file of the captures list is in the package byte for byte
-  (its SHA-256 was taken while it was read from `incoming/`), and every
-  capture the index knows of the week is on the list;
+- every volume matches its SHA-256 (catalog and `SHA256SUMS`), and every
+  entry matches `datapackage.json`; `SHA256SUMS` and `collection.json` list
+  exactly the volumes of the catalog, and nothing else is in the week's
+  directory;
+- every capture file of the captures lists is in its volume byte for byte
+  (its SHA-256 was taken while it was read from `incoming/`), no capture is
+  in two volumes, and every capture the index knows of the week is listed;
 - every WARC record is readable and its block and payload digests are valid;
-- every indexed record of the week is in the package exactly where the
-  index says, and no indexable record of the package is missing from the
-  index; every revisit points to a record of the package with the same digest;
+- every indexed record of the week is in a volume exactly where the index
+  says, and no indexable record of a volume is missing from the index; every
+  revisit points to a record of the week with the same digest;
 - every CDXJ and `pages.jsonl` line points at its record.
 
 Records are compared with the index in batches, so memory does not grow
@@ -222,7 +243,7 @@ sealed again automatically (3 attempts, an hour apart) and are flagged on the
 dashboard, under System and by the `HoarfrostSealFailed` alert until a seal
 succeeds.
 
-After sealing, reading a record is **one range request**: package key,
+After sealing, reading a record is **one range request**: volume key,
 absolute offset, length, gunzip.
 
 ## Recorder and engines
@@ -341,19 +362,24 @@ On start, and with `hoarfrost reindex`, the coordinator compares `catalog/`
 and `weekly/` with its `epochs` table and rebuilds missing or inconsistent
 weeks in the background:
 
-1. Sealed weeks: read `indexes/index.cdxj` and `pages/pages.jsonl` from the
-   WACZ with range requests (no WARC scan) and compute absolute offsets from
-   the ZIP central directory.
+1. Sealed weeks: read `indexes/index.cdxj` and `pages/pages.jsonl` from each
+   volume with range requests (no WARC scan) and compute absolute offsets
+   from the ZIP central directory, one volume at a time.
 2. The open week: read the CDXJ files next to the WARC files in `incoming/`.
-3. Fallback: a full WARC scan when a package index is damaged.
+3. Fallback: a full WARC scan of a volume whose index is damaged.
+
+A sealed week with a volume missing from storage is not rebuilt (and not
+taken for an open week): it is marked failed with the missing key, and
+`hoarfrost reindex` exits with an error.
 
 ## Web application
 
 Server-rendered with `html/template` and htmx; templates and static assets
 (CSS, fonts, icons, htmx) are embedded in the binary with `go:embed`, so the
 UI makes no external requests. The only exception is full replay:
-ReplayWeb.page (AGPL-3.0) is loaded from a CDN and reads weekly packages
-from the instance with range requests.
+ReplayWeb.page (AGPL-3.0) is loaded from a CDN and reads the week's
+volumes (through its `collection.json`) from the instance with range
+requests.
 
 | Screen | Contents |
 |---|---|
@@ -385,8 +411,8 @@ Rules:
 - No data needed for reading exists only in the database.
 
 The **conformance suite** (`scripts/conformance.sh`, `conformance/`, run in
-CI with `HOARFROST_CONFORMANCE=required`) checks packages only with
-independent tools:
+CI with `HOARFROST_CONFORMANCE=required`) checks whole weeks, split into
+volumes, only with independent tools:
 
 | Check | Tool |
 |---|---|
@@ -395,18 +421,21 @@ independent tools:
 | Stored ZIP entries | `zipinfo` |
 | CDXJ order | `LC_ALL=C sort -c` |
 | SURT keys | the Python `surt` library (differential test) |
-| Replay | pywb: load the WARC files and fetch a page |
-| Integrity | `sha256sum -c` and `datapackage.json` hashes |
+| Replay | pywb: load the WARC files of all volumes of the week and fetch pages, revisits resolved across volumes |
+| Integrity | `sha256sum -c SHA256SUMS` and `datapackage.json` hashes |
 
 The **exit test** (`scripts/exit-test.sh`) simulates the application having
 disappeared and uses only `rclone`, `unzip`, `dd`, `gunzip`, `warcio` and
 `pywb`:
 
-1. Download a random weekly package from storage.
-2. List it and read `pages/pages.jsonl`: articles and their text.
-3. Find an article in `indexes/index.cdxj` with `grep` and cut the record out
-   with `dd`.
-4. Load the package into pywb and open the article.
+1. Download a random week (all its volumes) from storage and check
+   `SHA256SUMS`.
+2. List the volumes and read their `pages/pages.jsonl`: articles and their
+   text.
+3. Find an article in the volumes' `indexes/index.cdxj` with `grep` and cut
+   the record out with `dd`.
+4. Load the WARC files of all volumes into one pywb collection and open the
+   article.
 5. Compare the text with hoarfrost's own export.
 
 The test fails if any step needs hoarfrost code. The storage `README.md`

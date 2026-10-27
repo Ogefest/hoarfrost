@@ -13,6 +13,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -329,7 +330,7 @@ func TestAPIAndReplay(t *testing.T) {
 	if _, err := e.coord.Seal(ctx, "", ep, true); err != nil {
 		t.Fatal(err)
 	}
-	waczURL := fmt.Sprintf("%s/wacz/default/%04d/W%02d.wacz", e.srv.URL, ep.Year(), ep.Week())
+	waczURL := e.srv.URL + "/wacz/default/" + strings.TrimPrefix(ep.VolumeKey(1), "weekly/")
 	req, _ := http.NewRequest("GET", waczURL, nil)
 	req.Header.Set("Authorization", "Bearer "+vtok)
 	req.Header.Set("Range", "bytes=0-3")
@@ -343,8 +344,17 @@ func TestAPIAndReplay(t *testing.T) {
 		t.Fatalf("wacz range: %d %q", rr.StatusCode, head)
 	}
 	resp, body = api(t, "GET", fmt.Sprintf("%s/replay/%d", e.srv.URL, pg.ID), vtok, "", nil)
-	if resp.StatusCode != 200 || !strings.Contains(string(body), "<replay-web-page") || !strings.Contains(string(body), "replayBase=\"/replay/\"") {
-		t.Fatalf("replay: %d", resp.StatusCode)
+	coll := fmt.Sprintf("/wacz/default/%04d/W%02d/collection.json", ep.Year(), ep.Week())
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "<replay-web-page") || !strings.Contains(string(body), "replayBase=\"/replay/\"") ||
+		!strings.Contains(string(body), `source="`+coll+`"`) {
+		t.Fatalf("replay: %d %s", resp.StatusCode, body)
+	}
+	resp, body = api(t, "GET", e.srv.URL+coll, vtok, "", nil)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"path": "`+path.Base(ep.VolumeKey(1))+`"`) {
+		t.Fatalf("collection: %d %s", resp.StatusCode, body)
+	}
+	if resp, _ := api(t, "GET", e.srv.URL+"/wacz/default/../catalog/x.json", vtok, "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("path outside weekly/: %d", resp.StatusCode)
 	}
 	_, body = api(t, "GET", e.srv.URL+"/replay/sw.js", vtok, "", nil)
 	if !strings.Contains(string(body), "importScripts") {
@@ -651,11 +661,11 @@ func TestStoragesThroughAPI(t *testing.T) {
 	if _, err := e.coord.Seal(ctx, "prasa", ep, true); err != nil {
 		t.Fatal(err)
 	}
-	resp, _ = api(t, "GET", fmt.Sprintf("%s/wacz/prasa/%04d/W%02d.wacz", e.srv.URL, ep.Year(), ep.Week()), tok, "", nil)
+	resp, _ = api(t, "GET", e.srv.URL+"/wacz/prasa/"+strings.TrimPrefix(ep.VolumeKey(1), "weekly/"), tok, "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("wacz of prasa: %d", resp.StatusCode)
 	}
-	resp, _ = api(t, "GET", fmt.Sprintf("%s/wacz/default/%04d/W%02d.wacz", e.srv.URL, ep.Year(), ep.Week()), tok, "", nil)
+	resp, _ = api(t, "GET", e.srv.URL+"/wacz/default/"+strings.TrimPrefix(ep.VolumeKey(1), "weekly/"), tok, "", nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("default storage has no package: %d", resp.StatusCode)
 	}

@@ -28,7 +28,7 @@ hoarfrost has two kinds of processes:
         │ worker      │  │ worker      │  … 0..N, optional
         └──────┬──────┘  └──────┬──────┘
                ▼                ▼
-        storage: incoming/*.warc.gz  →  weekly/*.wacz (sealed by the coordinator)
+        storage: incoming/*.warc.gz  →  weekly/<year>/W<week>/*.wacz (sealed by the coordinator)
 ```
 
 Start with step 1. Step 2 is only needed when one machine does not capture
@@ -179,13 +179,17 @@ Fallback captures and attachments stay in the storage of their page.
 
 Every storage is a complete, independent archive with its own `README.md`,
 `incoming/`, weekly packages, catalog and a copy of the configuration.
-Deduplication never crosses storages, so each package remains
+Deduplication never crosses storages, so each week remains
 self-contained, and the "already seen" URL filter is kept per storage (the
 same article may be archived in two storages). Search covers all storages,
 with a filter. Workers only take jobs for storages they have configured, so a
 worker can be limited to some buckets. CLI commands take `-storage` (`seal`,
 `verify`, `reindex`, `import-legacy`); without it `verify` and `reindex` cover
-every storage. Packages are served at `/wacz/<storage>/<year>/W<week>.wacz`.
+every storage. Volumes are served at
+`/wacz/<storage>/<year>/W<week>/<year>-W<week>-<n>.wacz`, the week as one
+multi-WACZ collection at `/wacz/<storage>/<year>/W<week>/collection.json`
+(which the replay page loads), and packages of weeks sealed before volumes
+at `/wacz/<storage>/<year>/W<week>.wacz`.
 
 ## Block lists
 
@@ -222,12 +226,16 @@ job is leased. After the week ends and `HOARFROST_SEAL_GRACE` (default 6h)
 passes, and no lease of the week is active, the coordinator:
 
 1. lists `incoming/<year>/W<week>/` and checks it against the index,
-2. streams `weekly/<year>/W<week>.wacz` to storage while building it (S3
-   multipart upload), then writes the `.sha256` file and the captures list
-   `weekly/<year>/W<week>.captures.jsonl`,
-3. moves index entries to absolute offsets inside the package,
-4. writes the page table and `catalog/<year>/W<week>.json`, verifies the
-   stored package and records the result in the catalog,
+2. splits the week into volumes of `HOARFROST_VOLUME_SIZE` capture bytes
+   (default 4 GiB; a capture file is never split). Each volume is built as a
+   WACZ file in the spool directory, stored as
+   `weekly/<year>/W<week>/<year>-W<week>-<n>.wacz` with one PUT request (no
+   multipart upload for the server to assemble), followed by its captures
+   list `<year>-W<week>-<n>.captures.jsonl`, and removed locally,
+3. moves index entries to absolute offsets inside the volumes,
+4. writes `SHA256SUMS` and `collection.json` of the volumes, the page table
+   and `catalog/<year>/W<week>.json`, verifies the stored volumes and records
+   the result in the catalog,
 5. after `HOARFROST_INCOMING_RETENTION` (default 30 days) deletes the
    `incoming/` files of verified weeks that are on the captures list
    (`hoarfrost cleanup` does the same on demand); other files, e.g. stored by
@@ -237,19 +245,27 @@ passes, and no lease of the week is active, the coordinator:
 
 Sealing runs beside source polling, so a long seal does not stop captures.
 
-**Resources.** The package is never copied to local disk. The spool
-directory (`<HOARFROST_DATA_DIR>/spool/seal-<week>`) holds only the sorted
-index and page lines while a week is packaged, gzipped: a few percent of the
-week; it is emptied when the week is sealed again after a crash. Memory
-grows with the number of capture files and pages of the week (about a
-kilobyte each), not with its size or number of records; on S3 add three
-upload parts of at least 16 MiB (more for weeks over 140 GB, so that the
-package fits in 9000 parts). Keep the spool directory on disk, not on
-`tmpfs`, which is memory.
+**Resources.** The week is never copied to local disk, one volume at a
+time is. The spool directory (`<HOARFROST_DATA_DIR>/spool/seal-<week>`)
+holds the volume being built and its sorted index and page lines: about
+`HOARFROST_VOLUME_SIZE` plus a few percent, whatever the size of the week;
+it is emptied when the week is sealed again after a crash. Keep it on disk,
+not on `tmpfs`, which is memory. Memory grows with the number of capture
+files and pages of the week (about a kilobyte each), not with its size or
+number of records; uploading a volume reads it from the file without
+buffering it. A volume of up to 5 GiB is one S3 PUT request, so
+`HOARFROST_VOLUME_SIZE` is at most 4.5 GiB (the indexes add a few percent).
+Only a single capture file larger than that makes a larger volume, which
+goes up as a multipart upload (logged as a warning); some S3 servers limit
+those (versitygw on ext4 fails to complete uploads of more than about 700
+parts).
 
-**Verification** reads the package once and proves that every capture file
-of the week is in it byte for byte, every record is readable with valid
-digests and every indexed record is where the index says (see
+**Verification** reads every volume once and proves that every capture
+file of the week is in one of them byte for byte, every record is readable
+with valid digests, every indexed record is where the index says and every
+revisit finds its original in the week; `SHA256SUMS` and `collection.json`
+must list exactly the volumes and nothing else may be in the week's
+directory (see
 [architecture](architecture.md#verification)). Run it again with
 `hoarfrost verify -epoch 2026-W41` or *Verify* under System.
 
@@ -259,8 +275,10 @@ heartbeat for 3 minutes was interrupted (the process ran out of memory,
 crashed or was restarted): its week is marked failed. Failed weeks are
 flagged on the dashboard and under System (*Sealing attempts*), reported by
 `hoarfrost_seal_errors` and the `HoarfrostSealFailed` alert, and sealed
-again automatically up to 3 times, an hour apart. A seal interrupted after
-the package was stored resumes from there; an earlier one starts over.
+again automatically up to 3 times, an hour apart. A seal interrupted while
+storing volumes resumes with the first volume without its captures list
+(the volumes stored before are kept); one interrupted later resumes from
+the step it reached.
 After the third failure fix the cause and use *Seal now* or
 `hoarfrost seal -epoch 2026-W41`. A week whose package failed verification
 is not sealed again automatically; its catalog lists the problems.
@@ -342,15 +360,16 @@ index is rebuilt from storage on the first start.
 
 ## Integrity
 
-`hoarfrost verify` re-reads every package: SHA-256 of the file and of each
+`hoarfrost verify` re-reads every volume: SHA-256 of the file and of each
 entry, every ZIP entry stored, every record readable at its absolute offset
 with valid block and payload digests, every revisit pointing to a record with
-the same digest inside the same package. Results are written to the catalog
+the same digest in a volume of the same week. Results are written to the catalog
 and shown on the System page. Hashes are for fixity, not legal evidence.
 
-The independent conformance suite (`scripts/conformance.sh`) and the exit
-test (`scripts/exit-test.sh`) check packages with `warcio`, `py-wacz`, `pywb`,
-`unzip` and `sha256sum` only.
+The independent conformance suite (`scripts/conformance.sh <week directory>`)
+and the exit test (`scripts/exit-test.sh`) check whole weeks with `warcio`,
+`py-wacz`, `pywb`, `unzip` and `sha256sum` only; pywb replays a week from the
+WARC files of all its volumes in one collection.
 
 ## Monitoring
 

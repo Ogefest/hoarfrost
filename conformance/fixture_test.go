@@ -10,6 +10,7 @@ package conformance
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,8 @@ func run(t *testing.T, name string, args ...string) []byte {
 
 // fixture is a sealed week produced by the real capture pipeline: pages with
 // shared resources (revisits), a PDF attachment, a redirect, a 404, a
-// page saved in a browser and capture metadata.
+// page saved in a browser and capture metadata. Every capture file gets a
+// volume of its own, so revisits point into other volumes.
 type fixture struct {
 	site    *testsite.Site
 	root    string // storage directory
@@ -67,8 +69,8 @@ type fixture struct {
 	idx     *index.DB
 	arc     *archive.Archive
 	epoch   epoch.ID
-	pkg     string   // local path of the WACZ
-	warcs   []string // WARC files extracted from the package
+	pkgs    []string // local paths of the WACZ volumes
+	warcs   []string // WARC files extracted from the volumes
 	sealed  *archive.Catalog
 	cssBody []byte
 }
@@ -126,6 +128,7 @@ func build(db string) (*fixture, error) {
 		return nil, err
 	}
 	f.arc = archive.New(f.store, f.idx, filepath.Join(dir, "spool"), nil)
+	f.arc.VolumeSize, f.arc.ConcatBySource = 1, true
 
 	commit := func(rec *recorder.Recorder) error {
 		cf, err := rec.Close()
@@ -182,34 +185,40 @@ func build(db string) (*fixture, error) {
 	if f.sealed, err = f.arc.Seal(ctx, f.epoch); err != nil {
 		return nil, err
 	}
-	data, err := storage.ReadAll(ctx, f.store, f.epoch.WeeklyKey())
-	if err != nil {
-		return nil, err
-	}
-	f.pkg = filepath.Join(dir, "week.wacz")
-	if err := os.WriteFile(f.pkg, data, 0o644); err != nil {
-		return nil, err
-	}
-	r, err := wacz.OpenFile(f.pkg)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	offsets, err := r.WARCOffsets()
-	if err != nil {
-		return nil, err
-	}
-	for name := range offsets {
-		b, err := r.ReadEntry(wacz.ArchiveDir + name)
+	for _, v := range f.sealed.Volumes {
+		p := filepath.Join(f.root, filepath.FromSlash(v.Key))
+		f.pkgs = append(f.pkgs, p)
+		r, err := wacz.OpenFile(p)
 		if err != nil {
 			return nil, err
 		}
-		p := filepath.Join(dir, "warc", name)
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		if err := os.WriteFile(p, b, 0o644); err != nil {
+		offsets, err := r.WARCOffsets()
+		if err != nil {
+			r.Close()
 			return nil, err
 		}
-		f.warcs = append(f.warcs, p)
+		for name := range offsets {
+			b, err := r.ReadEntry(wacz.ArchiveDir + name)
+			if err != nil {
+				r.Close()
+				return nil, err
+			}
+			p := filepath.Join(dir, "warc", name)
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			if _, err := os.Stat(p); err == nil {
+				r.Close()
+				return nil, fmt.Errorf("WARC file %s is in two volumes", name)
+			}
+			if err := os.WriteFile(p, b, 0o644); err != nil {
+				r.Close()
+				return nil, err
+			}
+			f.warcs = append(f.warcs, p)
+		}
+		r.Close()
+	}
+	if len(f.pkgs) < 3 {
+		return nil, fmt.Errorf("week sealed into %d volume(s)", len(f.pkgs))
 	}
 	css, err := os.ReadFile("../internal/testsite/site/css/main.css")
 	f.cssBody = css
