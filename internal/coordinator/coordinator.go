@@ -65,6 +65,8 @@ type Options struct {
 	// interrupted.
 	SealHeartbeat time.Duration
 	SealStale     time.Duration
+	// OverviewTTL is how long dashboard totals are cached (default 5m).
+	OverviewTTL time.Duration
 }
 
 // SourceStatus is the result of the last poll of a source.
@@ -101,6 +103,8 @@ type Coordinator struct {
 	mu      sync.Mutex
 	workers map[string]*WorkerStatus
 	sealing map[sealrun.Key]bool // weeks this process is sealing
+
+	overview overviewCache
 }
 
 // New creates a coordinator and loads the capture configuration.
@@ -132,6 +136,9 @@ func New(o Options) (*Coordinator, error) {
 	}
 	if o.SealStale == 0 {
 		o.SealStale = 3 * time.Minute
+	}
+	if o.OverviewTTL == 0 {
+		o.OverviewTTL = 5 * time.Minute
 	}
 	c := &Coordinator{
 		lib: o.Library, idx: o.Library.Index, queue: o.Queue, fetcher: o.Fetcher,

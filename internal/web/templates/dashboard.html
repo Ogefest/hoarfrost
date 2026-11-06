@@ -1,6 +1,7 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Dashboard</h1>
+<p class="muted">Totals as of {{datetime $d.At}}, refreshed every few minutes.</p>
 <div class="tiles">
   <div class="tile"><span class="label">Archive size</span><span class="value">{{bytes $d.Stats.Bytes}}</span></div>
   <div class="tile"><span class="label">Pages</span><span class="value">{{$d.Stats.Pages}}</span></div>

@@ -131,13 +131,13 @@ type apiFacet struct {
 
 // apiFacets lists the values the search filters accept.
 func (s *Server) apiFacets(w http.ResponseWriter, r *http.Request) {
-	stats, err := s.idx.SourceStats(r.Context())
+	ov, err := s.Coord.Overview(r.Context())
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err)
 		return
 	}
 	sources := []apiFacet{}
-	for _, st := range stats {
+	for _, st := range ov.Index.Sources {
 		if st.Source != "" {
 			sources = append(sources, apiFacet{Name: st.Source, Pages: st.Pages, Captured: st.Last})
 		}

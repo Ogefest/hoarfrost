@@ -887,3 +887,41 @@ func TestSealRefusedWhileAnotherProcessSeals(t *testing.T) {
 		t.Fatalf("errors %v", errs)
 	}
 }
+
+// TestOverviewCache: totals are computed once, served from memory until
+// they are older than OverviewTTL, then served stale while a background
+// refresh runs.
+func TestOverviewCache(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	var mu sync.Mutex
+	now := time.Now()
+	e.coord.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	ov, err := e.coord.Overview(ctx)
+	if err != nil || ov.Queue[queue.Queued] != 0 {
+		t.Fatalf("%v %v", ov.Queue, err)
+	}
+	if err := e.coord.PollSources(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if ov, _ := e.coord.Overview(ctx); ov.Queue[queue.Queued] != 0 {
+		t.Fatalf("fresh snapshot recomputed: %v", ov.Queue)
+	}
+	mu.Lock()
+	now = now.Add(6 * time.Minute)
+	mu.Unlock()
+	if ov, _ := e.coord.Overview(ctx); ov.Queue[queue.Queued] != 0 {
+		t.Fatalf("stale snapshot not served while refreshing: %v", ov.Queue)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ov, _ := e.coord.Overview(ctx)
+		if ov.Queue[queue.Queued] == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("not refreshed: %v", ov.Queue)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

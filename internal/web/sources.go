@@ -234,9 +234,9 @@ type sourcesData struct {
 
 func (s *Server) sourceRows(ctx context.Context) []sourceRow {
 	src := s.Coord.Sources()
-	stats, _ := s.idx.SourceStats(ctx)
+	ov, _ := s.Coord.Overview(ctx)
 	byName := map[string]index.SourceStats{}
-	for _, ss := range stats {
+	for _, ss := range ov.Index.Sources {
 		byName[ss.Source] = ss
 	}
 	statuses := s.Coord.SourceStatuses(ctx)

@@ -103,12 +103,11 @@ func (s *stateCollector) Describe(ch chan<- *prometheus.Desc) {
 func (s *stateCollector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if counts, err := s.c.queue.Counts(ctx); err == nil {
-		for state, n := range counts {
+	if ov, err := s.c.Overview(ctx); err == nil {
+		for state, n := range ov.Queue {
 			ch <- prometheus.MustNewConstMetric(descJobs, prometheus.GaugeValue, float64(n), state)
 		}
-	}
-	if st, err := s.c.idx.Stats(ctx, 1); err == nil {
+		st := ov.Index
 		for _, e := range st.EpochSizes {
 			ch <- prometheus.MustNewConstMetric(descEpochs, prometheus.GaugeValue, float64(e.Bytes), e.Storage, string(e.Epoch), e.State)
 		}

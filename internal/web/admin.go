@@ -47,7 +47,8 @@ func (s *Server) queuePage(w http.ResponseWriter, r *http.Request) {
 		jobs = jobs[:perPage]
 	}
 	d.Jobs = jobs
-	d.Counts, _ = s.queue.Counts(r.Context())
+	ov, _ := s.Coord.Overview(r.Context())
+	d.Counts = ov.Queue
 	s.render(w, r, "queue.html", "Queue", d)
 }
 
@@ -168,8 +169,8 @@ func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.SliceStable(d.Epochs, func(i, j int) bool { return d.Epochs[i].Epoch > d.Epochs[j].Epoch })
 	d.Sizes = map[string]int64{}
-	if sizes, err := s.idx.EpochSizes(ctx); err == nil {
-		for _, e := range sizes {
+	if ov, err := s.Coord.Overview(ctx); err == nil {
+		for _, e := range ov.Index.EpochSizes {
 			d.Sizes[e.Storage+"/"+string(e.Epoch)] = e.Bytes
 		}
 	}

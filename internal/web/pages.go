@@ -38,16 +38,18 @@ type dashboardData struct {
 	Active     []string
 	SealErrors map[string]string
 	Ratio      float64
+	At         time.Time // when the totals were computed
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	st, err := s.idx.Stats(ctx, 30)
+	ov, err := s.Coord.Overview(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	d := dashboardData{Stats: st, Workers: s.Coord.Workers(), SealErrors: s.Coord.SealErrors(ctx)}
+	st := ov.Index
+	d := dashboardData{Stats: st, Queue: ov.Queue, At: ov.At, Workers: s.Coord.Workers(), SealErrors: s.Coord.SealErrors(ctx)}
 	if len(d.Stats.EpochSizes) > 12 {
 		d.Stats.EpochSizes = d.Stats.EpochSizes[:12]
 	}
@@ -60,7 +62,6 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if st.Bytes+st.DedupSaved > 0 {
 		d.Ratio = float64(st.DedupSaved) / float64(st.Bytes+st.DedupSaved)
 	}
-	d.Queue, _ = s.queue.Counts(ctx)
 	d.Failed, _ = s.queue.List(ctx, queue.Failed, 5, 0)
 	if s.Active != nil {
 		d.Active = s.Active()
@@ -115,8 +116,8 @@ func (s *Server) archivePage(w http.ResponseWriter, r *http.Request) {
 	for _, src := range s.Coord.Sources().Sources {
 		d.Sources = append(d.Sources, src.Name)
 	}
-	stats, _ := s.idx.SourceStats(r.Context())
-	for _, ss := range stats {
+	ov, _ := s.Coord.Overview(r.Context())
+	for _, ss := range ov.Index.Sources {
 		if _, ok := s.Coord.Sources().Find(ss.Source); !ok && ss.Source != "" {
 			d.Sources = append(d.Sources, ss.Source)
 		}
