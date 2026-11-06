@@ -98,7 +98,9 @@ func testCreateAbort(t *testing.T, s storage.Storage) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("partial"))
+	if _, err := w.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
 	cancel()
 	if _, err := w.Commit(); err == nil {
 		t.Fatal("commit with a cancelled context succeeded")

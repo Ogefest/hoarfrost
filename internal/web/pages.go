@@ -348,7 +348,7 @@ func (s *Server) replayWorker(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveWACZ(w http.ResponseWriter, r *http.Request) {
 	key := "weekly/" + r.PathValue("path")
 	ep, ok := epoch.FromKey(key)
-	if !ok || storage.ValidKey(key) != nil || !(strings.HasSuffix(key, ".wacz") || key == ep.CollectionKey()) {
+	if !ok || storage.ValidKey(key) != nil || (!strings.HasSuffix(key, ".wacz") && key != ep.CollectionKey()) {
 		http.NotFound(w, r)
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -86,7 +87,7 @@ func (b *s3BodyLog) Read(p []byte) (int, error) {
 func (b *s3BodyLog) Close() error {
 	if !b.logged {
 		b.logged = true
-		attrs := append(b.attrs, "body", strings.TrimSpace(b.head.String()))
+		attrs := append(slices.Clip(b.attrs), "body", strings.TrimSpace(b.head.String()))
 		if b.status >= 300 || strings.Contains(b.head.String(), "<Error>") {
 			slog.Warn("s3 request", attrs...)
 		} else {

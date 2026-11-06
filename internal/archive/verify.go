@@ -601,7 +601,7 @@ func (vr *verifier) checkLine(s, where string) error {
 	base, ok := vr.offsets[l.Filename]
 	off, err1 := strconv.ParseInt(l.Offset, 10, 64)
 	n, err2 := strconv.ParseInt(l.Length, 10, 64)
-	if !ok || l.RecordID == "" || err1 != nil || err2 != nil {
+	if located := ok && l.RecordID != "" && err1 == nil && err2 == nil; !located {
 		vr.add(where, "line %d (%s) does not locate a record of the package", vr.cdxjLines, l.URL)
 		return nil
 	}
