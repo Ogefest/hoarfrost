@@ -62,6 +62,10 @@ else
 fi
 [[ -n "$article" ]] || { echo "article not found in pages.jsonl" >&2; exit 1; }
 url=$(sed -E 's/.*"url":"([^"]*)".*/\1/' <<<"$article")
+# A page reached through a redirect is stored under extra.finalUrl; the
+# record under its url is the redirect itself.
+final=$(grep -o '"finalUrl":"[^"]*"' <<<"$article" | sed -E 's/.*:"(.*)"/\1/' || true)
+url=${final:-$url}
 title=$(sed -E 's/.*"title":"([^"]*)".*/\1/' <<<"$article")
 echo "article: $title <$url>"
 
