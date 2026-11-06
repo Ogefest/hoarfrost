@@ -95,6 +95,10 @@ func (r *Replica) List(ctx context.Context, prefix string) ([]Object, error) {
 	return r.Primary.List(ctx, prefix)
 }
 
+func (r *Replica) Dirs(ctx context.Context, prefix string) ([]string, error) {
+	return Dirs(ctx, r.Primary, prefix)
+}
+
 func (r *Replica) Stat(ctx context.Context, key string) (Object, error) {
 	return r.Primary.Stat(ctx, key)
 }

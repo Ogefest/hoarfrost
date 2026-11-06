@@ -26,7 +26,24 @@ type ReindexOptions struct {
 	Force bool
 	// Progress is called after each epoch.
 	Progress func(ep epoch.ID, done, total int)
+	// Weeks selects sealed weeks, open weeks or both (the default).
+	Weeks Weeks
 }
+
+// Weeks selects which weeks Reindex rebuilds.
+type Weeks int
+
+const (
+	// AllWeeks rebuilds sealed and open weeks.
+	AllWeeks Weeks = iota
+	// SealedWeeks rebuilds weeks with a catalog. It reads catalogs and
+	// checks that their packages exist, so it is quick.
+	SealedWeeks
+	// OpenWeeks indexes incoming files missing from the index. It lists
+	// every incoming file of the open weeks, which takes minutes on a
+	// large week in S3.
+	OpenWeeks
+)
 
 // ReindexReport summarizes a rebuild.
 type ReindexReport struct {
@@ -46,9 +63,16 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 	if err != nil {
 		return nil, err
 	}
+	// A week with a catalog is never treated as open, also when its
+	// package is gone: it is reported as failed, not rebuilt from incoming/.
+	cataloged := map[epoch.ID]bool{}
 	sealed := map[epoch.ID]*Catalog{}
 	rep := &ReindexReport{}
 	for _, c := range cats {
+		cataloged[c.Epoch] = true
+		if opts.Weeks == OpenWeeks {
+			continue
+		}
 		missing, err := a.missingPackage(ctx, c)
 		if err != nil {
 			return nil, err
@@ -57,8 +81,6 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 			sealed[c.Epoch] = c
 			continue
 		}
-		// A sealed week whose package is gone is not rebuilt from incoming/
-		// as if it were open: it is reported as failed.
 		a.Log.Error("package of a sealed week missing from storage", "epoch", c.Epoch, "package", missing)
 		rep.Missing = append(rep.Missing, c.Epoch)
 		info := c.epochInfo(a.name())
@@ -67,21 +89,19 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 			return nil, err
 		}
 	}
-	missingWeek := map[epoch.ID]bool{}
-	for _, ep := range rep.Missing {
-		missingWeek[ep] = true
-	}
-	incoming, err := a.Storage.List(ctx, "incoming/")
-	if err != nil {
-		return nil, err
-	}
-	open := map[epoch.ID][]string{}
-	for _, o := range incoming {
-		ep, ok := epoch.FromKey(o.Key)
-		if !ok || !strings.HasSuffix(o.Key, ".warc.gz") || sealed[ep] != nil || missingWeek[ep] {
-			continue
+	// Open weeks are found from the directories of incoming/, so that the
+	// files of sealed weeks still kept there are never listed.
+	open := map[epoch.ID]bool{}
+	if opts.Weeks != SealedWeeks {
+		eps, err := a.IncomingEpochs(ctx)
+		if err != nil {
+			return nil, err
 		}
-		open[ep] = append(open[ep], o.Key)
+		for _, ep := range eps {
+			if !cataloged[ep] {
+				open[ep] = true
+			}
+		}
 	}
 
 	var eps []epoch.ID
@@ -116,7 +136,7 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 				}
 			}
 		} else {
-			n, err := a.reindexOpen(ctx, ep, open[ep], opts.Force)
+			n, err := a.reindexOpen(ctx, ep, opts.Force)
 			if err != nil {
 				return rep, fmt.Errorf("archive: reindex %s: %w", ep, err)
 			}
@@ -141,7 +161,53 @@ func filterEpoch(eps []epoch.ID, want epoch.ID) []epoch.ID {
 	return nil
 }
 
-func (a *Archive) reindexOpen(ctx context.Context, ep epoch.ID, keys []string, force bool) (int, error) {
+// IncomingEpochs returns the weeks with a directory in incoming/, sealed or
+// not, without listing the files in them.
+func (a *Archive) IncomingEpochs(ctx context.Context) ([]epoch.ID, error) {
+	years, err := storage.Dirs(ctx, a.Storage, "incoming/")
+	if err != nil {
+		return nil, err
+	}
+	var out []epoch.ID
+	for _, y := range years {
+		weeks, err := storage.Dirs(ctx, a.Storage, y)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range weeks {
+			if ep, ok := epoch.FromKey(w); ok && w == ep.IncomingPrefix() {
+				out = append(out, ep)
+			}
+		}
+	}
+	return out, nil
+}
+
+// reindexOpen indexes the incoming files of an open week missing from the
+// index. It holds the seal lock, so that a week is not sealed while its
+// files are being indexed (the listing may take minutes), and skips a week
+// sealed in the meantime.
+func (a *Archive) reindexOpen(ctx context.Context, ep epoch.ID, force bool) (int, error) {
+	a.sealMu.Lock()
+	defer a.sealMu.Unlock()
+	if _, err := a.ReadCatalog(ctx, ep); err == nil {
+		return 0, nil
+	} else if !errors.Is(err, storage.ErrNotExist) {
+		return 0, err
+	}
+	objs, err := a.Storage.List(ctx, ep.IncomingPrefix())
+	if err != nil {
+		return 0, err
+	}
+	var keys []string
+	for _, o := range objs {
+		if strings.HasSuffix(o.Key, ".warc.gz") {
+			keys = append(keys, o.Key)
+		}
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
 	if force {
 		if err := a.Index.DeleteEpoch(ctx, a.name(), ep); err != nil {
 			return 0, err

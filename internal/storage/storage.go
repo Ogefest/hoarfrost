@@ -83,6 +83,43 @@ func Create(ctx context.Context, s Storage, key string, sizeHint int64) (Writer,
 	return newPipeWriter(ctx, func(ctx context.Context, r io.Reader) error { return s.Put(ctx, key, r, -1) }, nil), nil
 }
 
+// DirLister is implemented by backends that list the directories directly
+// below a prefix without listing every object beneath them.
+type DirLister interface {
+	// Dirs returns the prefixes one level below prefix ("" or ending in
+	// "/"), each ending in "/", sorted.
+	Dirs(ctx context.Context, prefix string) ([]string, error)
+}
+
+// Dirs returns the prefixes one level below prefix ("" or ending in "/"),
+// e.g. "incoming/2026/" for "incoming/", sorted. Backends without their own
+// implementation list every object under prefix.
+func Dirs(ctx context.Context, s Storage, prefix string) ([]string, error) {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		return nil, fmt.Errorf("storage: dirs of %q: prefix must end in /", prefix)
+	}
+	if d, ok := s.(DirLister); ok {
+		return d.Dirs(ctx, prefix)
+	}
+	objs, err := s.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, o := range objs {
+		rest := o.Key[len(prefix):]
+		i := strings.Index(rest, "/")
+		if i < 0 {
+			continue
+		}
+		// List is sorted, so equal directories are adjacent.
+		if d := prefix + rest[:i+1]; len(out) == 0 || out[len(out)-1] != d {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
 // Stream reads a whole object sequentially.
 func Stream(ctx context.Context, s Storage, key string) (io.ReadCloser, int64, error) {
 	if st, ok := s.(Streamer); ok {

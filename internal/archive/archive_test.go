@@ -245,6 +245,78 @@ func TestIndexReproducible(t *testing.T) {
 	}
 }
 
+// listLog records the prefixes listed object by object.
+type listLog struct {
+	storage.Storage
+	listed []string
+}
+
+func (l *listLog) List(ctx context.Context, prefix string) ([]storage.Object, error) {
+	l.listed = append(l.listed, prefix)
+	return l.Storage.List(ctx, prefix)
+}
+
+func (l *listLog) Dirs(ctx context.Context, prefix string) ([]string, error) {
+	return storage.Dirs(ctx, l.Storage, prefix)
+}
+
+// TestReindexListsOnlyOpenWeeks checks that the incoming files of sealed
+// weeks, kept until their retention passes, are not listed by a reindex,
+// and that sealed and open weeks can be rebuilt separately.
+func TestReindexListsOnlyOpenWeeks(t *testing.T) {
+	e := newEnv(t)
+	e.populate()
+	ctx := context.Background()
+	if _, err := e.arc.Seal(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+	e.capture("/news/article2.html", "serwis-a", ep.Next())
+	want := e.dump()
+	if err := e.idx.DeleteEpoch(ctx, "", ep.Next()); err != nil {
+		t.Fatal(err)
+	}
+
+	log := &listLog{Storage: e.store}
+	arc := archive.New(log, e.idx, filepath.Join(e.dir, "spool"), nil)
+	arc.Now = e.arc.Now
+	t.Cleanup(func() { arc.Close() })
+
+	rep, err := arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.SealedWeeks})
+	if err != nil || rep.Captures != 0 || len(rep.Epochs) != 0 {
+		t.Fatalf("sealed weeks: %+v %v", rep, err)
+	}
+	for _, p := range log.listed {
+		if strings.HasPrefix(p, "incoming/") {
+			t.Fatalf("sealed-weeks reindex listed %q", p)
+		}
+	}
+
+	log.listed = nil
+	rep, err = arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.OpenWeeks})
+	if err != nil || rep.Captures != 2 || len(rep.Epochs) != 1 || rep.Epochs[0] != ep.Next() {
+		t.Fatalf("open weeks: %+v %v", rep, err)
+	}
+	for _, p := range log.listed {
+		if strings.HasPrefix(p, "incoming/") && p != ep.Next().IncomingPrefix() {
+			t.Fatalf("open-weeks reindex listed %q (all listed: %v)", p, log.listed)
+		}
+	}
+	if got := e.dump(); got != want {
+		t.Fatalf("index differs after reindex:\n%s", diff(want, got))
+	}
+
+	log.listed = nil
+	// The test captures are stored without a CDXJ index: both of the open week.
+	if n, err := arc.WriteMissingIndexes(ctx); err != nil || n != 2 {
+		t.Fatalf("missing indexes %d %v", n, err)
+	}
+	for _, p := range log.listed {
+		if strings.HasPrefix(p, "incoming/") && p != ep.Next().IncomingPrefix() {
+			t.Fatalf("WriteMissingIndexes listed %q", p)
+		}
+	}
+}
+
 // TestReindexWithCorruptCDXJ checks the fallback to scanning WARC data.
 func TestReindexWithCorruptCDXJ(t *testing.T) {
 	e := newEnv(t)
