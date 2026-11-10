@@ -5,7 +5,7 @@
 <p class="url"><a href="{{$p.URI}}" rel="noreferrer noopener" target="_blank">{{$p.URI}}</a></p>
 <div class="meta">
   <span>Captured {{datetime $p.Captured}}</span>
-  {{with $p.Published}}<span>Published {{.}}</span>{{end}}
+  {{if not $p.PublishedAt.IsZero}}<span>Published {{published $p.PublishedAt}}</span>{{end}}
   <span>Source <b>{{$p.Source}}</b></span>
   <span>Storage <b>{{$p.Storage}}</b></span>
   <span>Engine {{$p.Engine}}{{if $p.Fallback}} (fallback){{end}}</span>
