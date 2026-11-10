@@ -847,10 +847,22 @@ func (d *DB) Closest(ctx context.Context, uri string, t time.Time) (Record, erro
 // is searched in order with two short walks of the (surt_hash, date) index:
 // the last capture at or before t and the first one after it. The query is
 // planned for its values every time: a cached generic plan scans all
-// captures of the URL again.
+// captures of the URL again. Bitmap scans are disabled for the lookup: the
+// planner does not know that surt and uri follow from surt_hash, expects
+// the filter to keep almost no rows and reads and sorts every capture of a
+// shared asset (thousands of revisits, ~80 ms) instead of walking the index
+// to the first match (~0.1 ms).
 func (d *DB) ClosestIn(ctx context.Context, storage, uri string, t time.Time) (Record, error) {
 	if t.IsZero() {
 		t = time.Now()
+	}
+	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Record{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_bitmapscan = off`); err != nil {
+		return Record{}, err
 	}
 	surt := cdxj.SURT(uri)
 	groups := []string{"storage = $3 AND uri = $4", "storage = $3 AND uri <> $4", "storage <> $3 AND uri = $4", "storage <> $3 AND uri <> $4"}
@@ -859,7 +871,7 @@ func (d *DB) ClosestIn(ctx context.Context, storage, uri string, t time.Time) (R
 	}
 	for _, cond := range groups {
 		where := `WHERE surt_hash = $1 AND surt = $2 AND type IN ('response','revisit','resource') AND ` + cond
-		r, err := scanRecord(d.db.QueryRowContext(ctx, `SELECT `+recordCols+` FROM (
+		r, err := scanRecord(tx.QueryRowContext(ctx, `SELECT `+recordCols+` FROM (
 			(SELECT `+recordCols+` FROM records `+where+` AND date <= $5 ORDER BY date DESC LIMIT 1)
 			UNION ALL
 			(SELECT `+recordCols+` FROM records `+where+` AND date > $5 ORDER BY date LIMIT 1)
