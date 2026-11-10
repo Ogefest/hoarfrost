@@ -20,6 +20,7 @@ import (
 func Run(t *testing.T, newStorage func(t *testing.T) storage.Storage) {
 	t.Run("PutOpenReadAt", func(t *testing.T) { testPutOpen(t, newStorage(t)) })
 	t.Run("List", func(t *testing.T) { testList(t, newStorage(t)) })
+	t.Run("Dirs", func(t *testing.T) { testDirs(t, newStorage(t)) })
 	t.Run("StatDelete", func(t *testing.T) { testStatDelete(t, newStorage(t)) })
 	t.Run("AtomicPut", func(t *testing.T) { testAtomic(t, newStorage(t)) })
 	t.Run("InvalidKeys", func(t *testing.T) { testInvalidKeys(t, newStorage(t)) })
@@ -203,6 +204,42 @@ func testList(t *testing.T, s storage.Storage) {
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("List(%q) = %v, want %v", prefix, got, want)
 		}
+	}
+}
+
+func testDirs(t *testing.T, s storage.Storage) {
+	ctx := context.Background()
+	for i, k := range []string{
+		"incoming/2026/W41/b.warc.gz",
+		"incoming/2026/W41/a.warc.gz",
+		"incoming/2026/W42/c.warc.gz",
+		"incoming/2025/W52/d.warc.gz",
+		"incoming/2026/W4.txt",
+		"weekly/2026/W41.wacz",
+		"README.md",
+	} {
+		if err := storage.PutBytes(ctx, s, k, []byte(strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := map[string][]string{
+		"":                   {"incoming/", "weekly/"},
+		"incoming/":          {"incoming/2025/", "incoming/2026/"},
+		"incoming/2026/":     {"incoming/2026/W41/", "incoming/2026/W42/"},
+		"incoming/2026/W41/": nil,
+		"nothing/":           nil,
+	}
+	for prefix, want := range cases {
+		got, err := storage.Dirs(ctx, s, prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("Dirs(%q) = %v, want %v", prefix, got, want)
+		}
+	}
+	if _, err := storage.Dirs(ctx, s, "incoming"); err == nil {
+		t.Error("Dirs accepted a prefix not ending in /")
 	}
 }
 

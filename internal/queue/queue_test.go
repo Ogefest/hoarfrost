@@ -305,3 +305,25 @@ func TestSourcesTakeTurns(t *testing.T) {
 		t.Fatalf("per-domain limit: %+v", more)
 	}
 }
+
+func TestCountsBySource(t *testing.T) {
+	q, _ := newQueue(t)
+	ctx := context.Background()
+	if _, err := q.Add(ctx, NewJob{URL: "https://a.pl/1", Source: "a", Engine: "static"}, NewJob{URL: "https://a.pl/2", Source: "a", Engine: "static"},
+		NewJob{URL: "https://b.pl/1", Source: "b", Engine: "static"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Lease(ctx, LeaseRequest{Worker: "w", Engines: []string{"static"}, MaxPerDomain: 5, Duration: time.Minute, Max: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Add(ctx, NewJob{URL: "https://a.pl/3", Source: "a", Engine: "static"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.CountsBySource(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["a"] != (SourceCounts{Queued: 1, Leased: 2}) || got["b"] != (SourceCounts{Leased: 1}) || len(got) != 2 {
+		t.Fatalf("counts %+v", got)
+	}
+}

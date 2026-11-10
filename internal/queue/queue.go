@@ -518,6 +518,32 @@ func (q *Queue) Counts(ctx context.Context) (map[string]int, error) {
 	return out, rows.Err()
 }
 
+// SourceCounts are the unfinished jobs of one source.
+type SourceCounts struct {
+	Queued int
+	Leased int
+}
+
+// CountsBySource returns the queued and leased jobs per source.
+func (q *Queue) CountsBySource(ctx context.Context) (map[string]SourceCounts, error) {
+	rows, err := q.db.QueryContext(ctx, `SELECT source, count(*) FILTER (WHERE state = 'queued'), count(*) FILTER (WHERE state = 'leased')
+		FROM jobs WHERE state IN ('queued', 'leased') GROUP BY source`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]SourceCounts{}
+	for rows.Next() {
+		var src string
+		var c SourceCounts
+		if err := rows.Scan(&src, &c.Queued, &c.Leased); err != nil {
+			return nil, err
+		}
+		out[src] = c
+	}
+	return out, rows.Err()
+}
+
 // ActiveLeases counts unexpired leases in an epoch of a storage.
 func (q *Queue) ActiveLeases(ctx context.Context, storage string, ep epoch.ID) (int, error) {
 	var n int

@@ -1002,7 +1002,7 @@ func (c *Coordinator) SealPolicy() (attempts int, retry time.Duration) {
 }
 
 // Start prepares storage and the index: README, configuration snapshot and
-// rebuilding of missing index parts.
+// rebuilding of missing index parts of sealed weeks.
 func (c *Coordinator) Start(ctx context.Context) error {
 	for _, arc := range c.lib.All() {
 		if err := arc.WriteReadme(ctx); err != nil {
@@ -1012,16 +1012,38 @@ func (c *Coordinator) Start(ctx context.Context) error {
 	if err := c.SnapshotSources(ctx); err != nil {
 		return fmt.Errorf("coordinator: config snapshot: %w", err)
 	}
+	// Only sealed weeks are checked here: that is quick. Open weeks are
+	// indexed by Run, after the web UI and workers have started.
 	for _, arc := range c.lib.All() {
-		rep, err := arc.Reindex(ctx, archive.ReindexOptions{})
+		rep, err := arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.SealedWeeks})
 		if err != nil {
 			return fmt.Errorf("coordinator: reindex of %s: %w", arc.Name, err)
 		}
 		if len(rep.Epochs) > 0 {
-			c.log.Info("index rebuilt from storage", "storage", arc.Name, "epochs", rep.Epochs, "captures", rep.Captures)
+			c.log.Info("index rebuilt from storage", "storage", arc.Name, "epochs", rep.Epochs)
 		}
 	}
 	return nil
+}
+
+// reindexOpenWeeks indexes incoming captures of open weeks missing from
+// the index, e.g. stored by a worker that stopped before reporting them.
+// It lists every incoming file of those weeks (minutes on a large week in
+// S3), so it runs in the background; captures recorded meanwhile are
+// skipped as already indexed.
+func (c *Coordinator) reindexOpenWeeks(ctx context.Context) {
+	for _, arc := range c.lib.All() {
+		start := c.Now()
+		rep, err := arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.OpenWeeks})
+		if err != nil {
+			if ctx.Err() == nil {
+				c.log.Error("indexing open weeks", "storage", arc.Name, "err", err)
+			}
+			continue
+		}
+		c.log.Info("open weeks indexed", "storage", arc.Name, "epochs", rep.Epochs, "captures", rep.Captures,
+			"took", c.Now().Sub(start).Round(time.Second))
+	}
 }
 
 // writeMissingIndexes adds CDXJ files to incoming captures stored without
@@ -1056,6 +1078,8 @@ func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 	sealed := make(chan struct{})
 	go func() {
 		defer close(sealed)
+		// Weeks are sealed only once their incoming files are indexed.
+		c.reindexOpenWeeks(ctx)
 		c.runSealing(ctx, tick)
 	}()
 	defer func() { <-sealed }()

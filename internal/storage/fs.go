@@ -221,6 +221,36 @@ func (s *FS) List(ctx context.Context, prefix string) ([]Object, error) {
 	return out, err
 }
 
+// Dirs lists the directories below prefix; a directory left empty by
+// deletes is listed too.
+func (s *FS) Dirs(ctx context.Context, prefix string) ([]string, error) {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		return nil, fmt.Errorf("storage: dirs of %q: prefix must end in /", prefix)
+	}
+	dir := s.root
+	if prefix != "" {
+		p, err := s.path(strings.TrimSuffix(prefix, "/"))
+		if err != nil {
+			return nil, err
+		}
+		dir = p
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), tmpPrefix) {
+			out = append(out, prefix+e.Name()+"/")
+		}
+	}
+	return out, nil
+}
+
 func (s *FS) Stat(ctx context.Context, key string) (Object, error) {
 	p, err := s.path(key)
 	if err != nil {

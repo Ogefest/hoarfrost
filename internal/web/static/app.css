@@ -232,3 +232,17 @@ code:empty { display: none; }
 label > .muted { font-weight: 400; margin-left: 4px; }
 label > .muted::before { content: "· "; }
 h1 + .url { margin-top: -14px; }
+
+/* Searchable choice input (static/app.js). */
+.combo { position: relative; min-width: 200px; }
+.combo input { width: 100%; }
+.combo-menu { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); max-height: 320px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgb(16 24 40 / .12); min-width: 260px; }
+.combo-menu li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.combo-menu li.active, .combo-menu li[data-value]:hover { background: var(--accent-soft); }
+.combo-menu .combo-all { color: var(--muted); }
+.combo-menu .combo-none { color: var(--muted); cursor: default; font-size: 13px; }
+.combo-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+table.results.archive .desc { color: var(--muted); font-size: 13px; margin: 2px 0; }
+table.results.archive td { vertical-align: top; }

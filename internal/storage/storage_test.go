@@ -96,6 +96,20 @@ func TestReplicaContract(t *testing.T) {
 	})
 }
 
+// listOnly hides the optional interfaces of a backend, so that the
+// generic fallbacks (e.g. Dirs through List) are tested.
+type listOnly struct{ storage.Storage }
+
+func TestFallbackContract(t *testing.T) {
+	storagetest.Run(t, func(t *testing.T) storage.Storage {
+		s, err := storage.NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return listOnly{s}
+	})
+}
+
 func TestReplicaCopies(t *testing.T) {
 	ctx := context.Background()
 	p, _ := storage.NewFS(t.TempDir())

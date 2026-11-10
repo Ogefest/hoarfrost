@@ -360,13 +360,22 @@ Reading a record:
 
 On start, and with `hoarfrost reindex`, the coordinator compares `catalog/`
 and `weekly/` with its `epochs` table and rebuilds missing or inconsistent
-weeks in the background:
+weeks:
 
 1. Sealed weeks: read `indexes/index.cdxj` and `pages/pages.jsonl` from each
    volume with range requests (no WARC scan) and compute absolute offsets
    from the ZIP central directory, one volume at a time.
-2. The open week: read the CDXJ files next to the WARC files in `incoming/`.
+2. Open weeks: index the WARC files in `incoming/` missing from the index
+   (e.g. stored by a worker that stopped before reporting them).
 3. Fallback: a full WARC scan of a volume whose index is damaged.
+
+Open weeks are found from the directories of `incoming/` (a delimited
+listing), so the files of sealed weeks, kept there until their retention
+passes, are never listed. Listing the files of an open week still takes
+minutes in a large S3 bucket, so at startup only sealed weeks are checked
+before the web UI starts; open weeks are indexed in the background, before
+the first seal, holding the seal lock of the archive so that a week is not
+sealed while it is being indexed.
 
 A sealed week with a volume missing from storage is not rebuilt (and not
 taken for an open week): it is marked failed with the missing key, and

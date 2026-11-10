@@ -478,6 +478,49 @@ func httpPost(t *testing.T, url, tok, body string) *http.Response {
 	return resp
 }
 
+// TestOpenWeeksIndexedAfterStart checks that Start does not wait for the
+// incoming files of open weeks, and that Run indexes the ones missing
+// from the index (e.g. stored by a worker that stopped before reporting).
+func TestOpenWeeksIndexedAfterStart(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	cf, err := e.coord.Record(ctx, "", "", "upload", "upload", func(r *recorder.Recorder) error {
+		info, err := r.WriteResource(ctx, recorder.ResourceRecord{URI: "https://x.pl/a", ContentType: "text/html", Body: []byte("<title>Up</title><p>sierota</p>")})
+		if err != nil {
+			return err
+		}
+		_, err = r.WriteMetadata(recorder.PageInfo{URL: "https://x.pl/a", RecordID: info.ID, Title: "Up", Text: "sierota"})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.idx.DeleteEpoch(ctx, "", cf.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.coord.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := e.idx.CountMatches(ctx, "sierota"); n != 0 {
+		t.Fatal("Start indexed an open week")
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); e.coord.Run(runCtx, time.Hour) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if n, _ := e.idx.CountMatches(ctx, "sierota"); n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("open week not indexed by Run")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestRecordUploadAndSnapshots(t *testing.T) {
 	e := newEnv(t, basicSources, time.Minute)
 	ctx := context.Background()

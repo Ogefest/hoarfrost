@@ -401,6 +401,35 @@ func (s *S3) List(ctx context.Context, prefix string) ([]Object, error) {
 	return out, nil
 }
 
+// Dirs lists the common prefixes of a delimited listing, which the server
+// answers without returning the objects below them.
+func (s *S3) Dirs(ctx context.Context, prefix string) ([]string, error) {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		return nil, fmt.Errorf("storage: dirs of %q: prefix must end in /", prefix)
+	}
+	full := s.key(prefix)
+	if s.cfg.Prefix != "" && prefix == "" {
+		full = s.cfg.Prefix + "/"
+	}
+	var out []string
+	for obj := range s.client.ListObjects(ctx, s.cfg.Bucket, minio.ListObjectsOptions{Prefix: full, Recursive: false}) {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
+		// Objects directly under prefix come back too; only common
+		// prefixes end in "/".
+		if !strings.HasSuffix(obj.Key, "/") {
+			continue
+		}
+		key := obj.Key
+		if s.cfg.Prefix != "" {
+			key = strings.TrimPrefix(key, s.cfg.Prefix+"/")
+		}
+		out = append(out, key)
+	}
+	return out, nil
+}
+
 func (s *S3) Delete(ctx context.Context, key string) error {
 	if err := ValidKey(key); err != nil {
 		return err

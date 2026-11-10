@@ -41,7 +41,26 @@ func (a *Archive) WriteMissingIndexes(ctx context.Context) (int, error) {
 	for _, c := range cats {
 		sealed[c.Epoch] = true
 	}
-	objs, err := a.Storage.List(ctx, "incoming/")
+	eps, err := a.IncomingEpochs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, ep := range eps {
+		if sealed[ep] {
+			continue
+		}
+		m, err := a.writeMissingIndexes(ctx, ep)
+		n += m
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func (a *Archive) writeMissingIndexes(ctx context.Context, ep epoch.ID) (int, error) {
+	objs, err := a.Storage.List(ctx, ep.IncomingPrefix())
 	if err != nil {
 		return 0, err
 	}
@@ -51,8 +70,7 @@ func (a *Archive) WriteMissingIndexes(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, o := range objs {
-		ep, ok := epoch.FromKey(o.Key)
-		if !ok || sealed[ep] || !strings.HasSuffix(o.Key, ".warc.gz") || have[IndexKey(o.Key)] {
+		if !strings.HasSuffix(o.Key, ".warc.gz") || have[IndexKey(o.Key)] {
 			continue
 		}
 		if err := ctx.Err(); err != nil {

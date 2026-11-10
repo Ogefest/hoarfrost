@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/coordinator"
 	"github.com/ogefest/hoarfrost/internal/engine"
 	"github.com/ogefest/hoarfrost/internal/index"
+	"github.com/ogefest/hoarfrost/internal/queue"
 )
 
 // settingsForm is config.Settings as form fields. Empty values inherit;
@@ -222,17 +224,98 @@ type sourceRow struct {
 	Status   coordinator.SourceStatus
 	NextPoll time.Time
 	Stats    index.SourceStats
+	Queue    queue.SourceCounts
 }
+
+// matches reports whether the name or an input of the source contains q.
+func (r sourceRow) matches(q string) bool {
+	if q == "" || strings.Contains(strings.ToLower(r.Source.Name), q) {
+		return true
+	}
+	for _, list := range [][]string{r.Source.Feeds, r.Source.Sitemaps, r.Source.URLs} {
+		for _, u := range list {
+			if strings.Contains(strings.ToLower(u), q) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Source list filters.
+const (
+	sourcesEnabled  = "enabled"
+	sourcesDisabled = "disabled"
+	sourcesErrors   = "errors"
+	sourcesQueued   = "queued"
+)
+
+// sourcesFilter is the query of the sources page.
+type sourcesFilter struct {
+	Q      string
+	Status string
+	Sort   string // "" (name), "queued", "pages", "poll"
+	Page   int
+}
+
+func (f sourcesFilter) keep(r sourceRow) bool {
+	switch f.Status {
+	case sourcesEnabled:
+		if !r.Source.IsEnabled() {
+			return false
+		}
+	case sourcesDisabled:
+		if r.Source.IsEnabled() {
+			return false
+		}
+	case sourcesErrors:
+		if r.Status.Error == "" {
+			return false
+		}
+	case sourcesQueued:
+		if r.Queue.Queued+r.Queue.Leased == 0 {
+			return false
+		}
+	}
+	return r.matches(strings.ToLower(strings.TrimSpace(f.Q)))
+}
+
+func (f sourcesFilter) sort(rows []sourceRow) {
+	byName := func(a, b sourceRow) int { return strings.Compare(a.Source.Name, b.Source.Name) }
+	cmp := byName
+	switch f.Sort {
+	case "queued":
+		cmp = func(a, b sourceRow) int { return b.Queue.Queued - a.Queue.Queued }
+	case "pages":
+		cmp = func(a, b sourceRow) int { return int(b.Stats.Pages - a.Stats.Pages) }
+	case "poll":
+		cmp = func(a, b sourceRow) int { return b.Status.LastPoll.Compare(a.Status.LastPoll) }
+	}
+	slices.SortStableFunc(rows, func(a, b sourceRow) int {
+		if c := cmp(a, b); c != 0 {
+			return c
+		}
+		return byName(a, b)
+	})
+}
+
+const sourcesPerPage = 50
 
 type sourcesData struct {
 	Rows       []sourceRow
+	Filter     sourcesFilter
+	Total      int // sources of the instance
+	Matching   int // sources passing the filter
+	Pages      int
+	Back       string // this page with its query, for the row actions
+	QueueAt    time.Time
 	Defaults   config.Resolved
 	Blocklists []blocklist.Status
 	Rules      int
 	Version    string
 }
 
-func (s *Server) sourceRows(ctx context.Context) []sourceRow {
+func (s *Server) sourceRows(ctx context.Context) ([]sourceRow, time.Time) {
 	src := s.Coord.Sources()
 	ov, _ := s.Coord.Overview(ctx)
 	byName := map[string]index.SourceStats{}
@@ -242,7 +325,7 @@ func (s *Server) sourceRows(ctx context.Context) []sourceRow {
 	statuses := s.Coord.SourceStatuses(ctx)
 	var rows []sourceRow
 	for _, so := range src.Sources {
-		row := sourceRow{Source: so, Resolved: src.Resolve(so.Name), Status: statuses[so.Name], Stats: byName[so.Name]}
+		row := sourceRow{Source: so, Resolved: src.Resolve(so.Name), Status: statuses[so.Name], Stats: byName[so.Name], Queue: ov.QueueBySource[so.Name]}
 		if so.IsEnabled() {
 			row.NextPoll = time.Now()
 			if !row.Status.LastPoll.IsZero() {
@@ -251,11 +334,35 @@ func (s *Server) sourceRows(ctx context.Context) []sourceRow {
 		}
 		rows = append(rows, row)
 	}
-	return rows
+	return rows, ov.At
 }
 
 func (s *Server) sourcesPage(w http.ResponseWriter, r *http.Request) {
-	d := sourcesData{Rows: s.sourceRows(r.Context()), Defaults: s.Coord.Sources().Resolve(""), Blocklists: s.Coord.BlocklistStatuses()}
+	q := r.URL.Query()
+	f := sourcesFilter{Q: strings.TrimSpace(q.Get("q")), Status: q.Get("status"), Sort: q.Get("sort")}
+	f.Page, _ = strconv.Atoi(q.Get("page"))
+	all, at := s.sourceRows(r.Context())
+	var rows []sourceRow
+	for _, row := range all {
+		if f.keep(row) {
+			rows = append(rows, row)
+		}
+	}
+	f.sort(rows)
+	d := sourcesData{Filter: f, Total: len(all), Matching: len(rows), QueueAt: at, Back: "/sources",
+		Defaults: s.Coord.Sources().Resolve(""), Blocklists: s.Coord.BlocklistStatuses()}
+	if r.URL.RawQuery != "" {
+		v := r.URL.Query()
+		v.Del("msg")
+		v.Del("err")
+		if enc := v.Encode(); enc != "" {
+			d.Back += "?" + enc
+		}
+	}
+	d.Pages = max(1, (len(rows)+sourcesPerPage-1)/sourcesPerPage)
+	d.Filter.Page = min(max(f.Page, 1), d.Pages)
+	start := (d.Filter.Page - 1) * sourcesPerPage
+	d.Rows = rows[start:min(start+sourcesPerPage, len(rows))]
 	if set, err := s.Coord.Blocklist(r.Context()); err == nil {
 		d.Rules, d.Version = set.Len(), set.Version()
 	}
@@ -331,10 +438,10 @@ func (s *Server) toggleSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Coord.SetSourceEnabled(r.Context(), src.Name, !src.IsEnabled()); err != nil {
-		redirectErr(w, r, "/sources", err)
+		redirectErr(w, r, sourcesBack(r), err)
 		return
 	}
-	redirect(w, r, "/sources", "Source updated.")
+	redirect(w, r, sourcesBack(r), "Source updated.")
 }
 
 // testSource checks a saved source, or the source form posted to
@@ -381,10 +488,22 @@ func (s *Server) pollSource(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
 	defer cancel()
 	if err := s.Coord.PollSource(ctx, r.PathValue("name")); err != nil {
-		redirectErr(w, r, "/sources", err)
+		redirectErr(w, r, sourcesBack(r), err)
 		return
 	}
-	redirect(w, r, "/sources", "Source polled.")
+	redirect(w, r, sourcesBack(r), "Source polled.")
+}
+
+// sourcesBack is the filtered sources page a row action was sent from.
+func sourcesBack(r *http.Request) string {
+	if b := r.PostFormValue("back"); under(b, "/sources") && safeNext(b) == b {
+		return b
+	}
+	return "/sources"
+}
+
+func under(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"?") || strings.HasPrefix(path, prefix+"/")
 }
 
 func (s *Server) pollSources(w http.ResponseWriter, r *http.Request) {
@@ -508,7 +627,8 @@ type apiSource struct {
 func (s *Server) apiSources(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Coord.Sources()
 	out := []apiSource{}
-	for _, row := range s.sourceRows(r.Context()) {
+	rows, _ := s.sourceRows(r.Context())
+	for _, row := range rows {
 		a := apiSource{Source: row.Source, Found: row.Status.Found, New: row.Status.New, LastError: row.Status.Error}
 		if !row.Status.LastPoll.IsZero() {
 			a.LastPoll = &row.Status.LastPoll
