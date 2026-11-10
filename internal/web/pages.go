@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,10 +76,16 @@ type archiveData struct {
 	ToStr    string
 	Results  []index.Page
 	Total    int
-	Sources  []string
+	Sources  []sourceOption
 	Storages []string
 	Page     int
 	Pages    int
+}
+
+// sourceOption is a source in the archive filter.
+type sourceOption struct {
+	Name  string
+	Pages int64
 }
 
 const perPage = 50
@@ -113,15 +120,23 @@ func (s *Server) archivePage(w http.ResponseWriter, r *http.Request) {
 	}
 	d := archiveData{Query: sq, FromStr: r.URL.Query().Get("from"), ToStr: r.URL.Query().Get("to"), Results: res, Total: total,
 		Page: page, Pages: (total + perPage - 1) / perPage, Storages: s.Coord.Storages()}
-	for _, src := range s.Coord.Sources().Sources {
-		d.Sources = append(d.Sources, src.Name)
-	}
+	// Configured sources and those only found in the archive.
 	ov, _ := s.Coord.Overview(r.Context())
+	pages := map[string]int64{}
 	for _, ss := range ov.Index.Sources {
-		if _, ok := s.Coord.Sources().Find(ss.Source); !ok && ss.Source != "" {
-			d.Sources = append(d.Sources, ss.Source)
+		if ss.Source != "" {
+			pages[ss.Source] = ss.Pages
 		}
 	}
+	for _, src := range s.Coord.Sources().Sources {
+		if _, ok := pages[src.Name]; !ok {
+			pages[src.Name] = 0
+		}
+	}
+	for name, n := range pages {
+		d.Sources = append(d.Sources, sourceOption{name, n})
+	}
+	slices.SortFunc(d.Sources, func(a, b sourceOption) int { return strings.Compare(a.Name, b.Name) })
 	s.render(w, r, "archive.html", "Archive", d)
 }
 

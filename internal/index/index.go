@@ -266,7 +266,9 @@ type Page struct {
 	URLID      int64
 	Captured   time.Time
 	// Published is the publication date (YYYY-MM-DD) when known.
-	Published   string
+	Published string
+	// PublishedAt is the publication time when known.
+	PublishedAt time.Time
 	Description string
 	Authors     []string
 	SchemaTypes []string

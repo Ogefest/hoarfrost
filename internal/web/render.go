@@ -21,10 +21,17 @@ var funcs = template.FuncMap{
 	"bytes":    humanBytes,
 	"datetime": func(t time.Time) string { return fmtTime(t, "2006-01-02 15:04") },
 	"date":     func(t time.Time) string { return fmtTime(t, "2006-01-02") },
-	"ago":      ago,
-	"pct":      func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
-	"can":      auth.Can,
-	"version":  func() string { return version.Version },
+	"published": func(t time.Time) string {
+		// A publication date without a time is stored as midnight UTC.
+		if t.Equal(t.Truncate(24 * time.Hour)) {
+			return t.Format("2006-01-02")
+		}
+		return fmtTime(t, "2006-01-02 15:04")
+	},
+	"ago":     ago,
+	"pct":     func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+	"can":     auth.Can,
+	"version": func() string { return version.Version },
 	"icon": func(name string) template.HTML {
 		return template.HTML(`<svg class="i" aria-hidden="true"><use href="/static/icons.svg#` + template.HTMLEscapeString(name) + `"></use></svg>`)
 	},

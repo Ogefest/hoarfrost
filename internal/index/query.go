@@ -73,7 +73,8 @@ func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 		p.Microformats = json.RawMessage(microformats.String)
 	}
 	if published.Valid {
-		p.Published = published.Time.UTC().Format(time.DateOnly)
+		p.PublishedAt = published.Time.UTC()
+		p.Published = p.PublishedAt.Format(time.DateOnly)
 	}
 	if schemaOrg.Valid {
 		p.SchemaOrg = json.RawMessage(schemaOrg.String)

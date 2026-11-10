@@ -3,9 +3,10 @@
 <h1>Archive</h1>
 <form class="search card" method="get" action="/archive">
   <input type="search" name="q" value="{{$d.Query.Q}}" placeholder="Search titles and text…" autofocus>
-  <select name="source"><option value="">All sources</option>
-    {{range $d.Sources}}<option {{if eq . $d.Query.Source}}selected{{end}}>{{.}}</option>{{end}}
-  </select>
+  <div class="combo">
+    <input name="source" value="{{$d.Query.Source}}" placeholder="All sources" list="archive-sources" autocomplete="off" aria-label="Source" data-combo>
+    <datalist id="archive-sources">{{range $d.Sources}}<option value="{{.Name}}" data-count="{{.Pages}}"></option>{{end}}</datalist>
+  </div>
   {{if gt (len $d.Storages) 1}}<select name="storage"><option value="">All storages</option>
     {{range $d.Storages}}<option {{if eq . $d.Query.Storage}}selected{{end}}>{{.}}</option>{{end}}
   </select>{{end}}
@@ -21,12 +22,19 @@
   <button class="primary">{{icon "search"}}Search</button>
 </form>
 <p class="muted">{{$d.Total}} result(s)</p>
-<table class="results">
+<table class="results archive">
+  <tr><th>Published</th><th>Page</th><th>Captured</th><th></th></tr>
   {{range $d.Results}}
   <tr>
-    <td class="when">{{datetime .Captured}}</td>
-    <td><a href="/page/{{.ID}}">{{if .Title}}{{.Title}}{{else}}(untitled){{end}}</a><br><span class="url">{{.URI}}</span></td>
-    <td>{{if gt (len $d.Storages) 1}}<span class="tag">{{.Storage}}</span> {{end}}<span class="tag">{{.Source}}</span> {{if ne .Kind "page"}}<span class="tag">{{.Kind}}</span>{{end}} {{if .Fallback}}<span class="tag">fallback</span>{{end}}</td>
+    <td class="when">{{if .PublishedAt.IsZero}}<span class="muted">unknown</span>{{else}}{{published .PublishedAt}}{{end}}</td>
+    <td>
+      <a href="/page/{{.ID}}">{{if .Title}}{{.Title}}{{else}}(untitled){{end}}</a>
+      {{with .Description}}<div class="desc">{{truncate . 220}}</div>{{end}}
+      <div class="url">{{.URI}}</div>
+      {{if or .Authors .Keywords}}<div class="small muted">{{range $i, $a := .Authors}}{{if $i}}, {{end}}{{$a}}{{end}}{{if and .Authors .Keywords}} · {{end}}{{range $i, $k := .Keywords}}{{if lt $i 5}}{{if $i}}, {{end}}<a href="{{query "/archive" "keyword" $k}}">{{$k}}</a>{{end}}{{end}}</div>{{end}}
+    </td>
+    <td class="when"><span title="{{datetime .Captured}}">{{datetime .Captured}}</span><br><span class="small">{{.Engine}}{{if .TextLen}} · {{.TextLen}} chars{{end}}</span></td>
+    <td>{{if gt (len $d.Storages) 1}}<span class="tag">{{.Storage}}</span> {{end}}<a class="tag" href="{{query "/archive" "source" .Source}}">{{.Source}}</a> {{if ne .Kind "page"}}<span class="tag">{{.Kind}}</span>{{end}} {{if .Fallback}}<span class="tag">fallback</span>{{end}}{{with .Status}}{{if ge . 400}} <span class="tag">HTTP {{.}}</span>{{end}}{{end}}</td>
   </tr>
   {{end}}
 </table>
