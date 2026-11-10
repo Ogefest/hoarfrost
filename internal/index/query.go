@@ -50,6 +50,17 @@ const pageCols = `p.page_id, p.metadata_id, coalesce(p.record_id,''), p.url_id, 
 	coalesce(array_to_json(p.keywords)::text,'[]'), coalesce(p.source,''), coalesce(p.engine,''), coalesce(p.kind,''), coalesce(p.mime,''),
 	coalesce(p.status,0), p.fallback, p.text_len, p.resources, p.file, p.location, p."offset", p.length`
 
+// PublishedDate is the day of a publication time: a date stated without a
+// time is stored as midnight UTC and keeps its day; a time is given in the
+// local time zone (a page published at 00:30 in Warsaw is from that day,
+// not from the day before in UTC).
+func PublishedDate(t time.Time) string {
+	if t.Equal(t.Truncate(24 * time.Hour)) {
+		return t.UTC().Format(time.DateOnly)
+	}
+	return t.Local().Format(time.DateOnly)
+}
+
 func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 	var p Page
 	var ep string
@@ -74,7 +85,7 @@ func scanPage(row interface{ Scan(...any) error }) (Page, error) {
 	}
 	if published.Valid {
 		p.PublishedAt = published.Time.UTC()
-		p.Published = p.PublishedAt.Format(time.DateOnly)
+		p.Published = PublishedDate(p.PublishedAt)
 	}
 	if schemaOrg.Valid {
 		p.SchemaOrg = json.RawMessage(schemaOrg.String)

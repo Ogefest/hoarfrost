@@ -131,8 +131,9 @@ func (a *Archive) ReadCatalog(ctx context.Context, ep epoch.ID) (*Catalog, error
 	return &c, nil
 }
 
-// WriteCatalog stores the catalog document. Catalog files are the only
-// archive objects that are rewritten (verification results, cleanup).
+// WriteCatalog stores the catalog document. Catalog files and page tables
+// (derived from the index) are the only archive objects that are rewritten
+// (verification results, cleanup, repair-published).
 func (a *Archive) WriteCatalog(ctx context.Context, c *Catalog) error {
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

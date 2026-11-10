@@ -27,6 +27,7 @@ var commands = []command{
 	{"seal", "seal an epoch into a weekly WACZ package", cmdSeal},
 	{"verify", "verify sealed packages against their hashes and indexes", cmdVerify},
 	{"reindex", "rebuild the index from storage", cmdReindex},
+	{"repair-published", "recompute publication dates from structured data in the index", cmdRepairPublished},
 	{"import-sqlite", "copy users, queue and sources from an app.sqlite of an older version", cmdImportSQLite},
 	{"export", "export an archived page as a single HTML file", cmdExport},
 	{"import-legacy", "import a directory of single-file HTML pages", cmdImportLegacy},
@@ -38,7 +39,7 @@ var commands = []command{
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage: hoarfrost [-env FILE] <command> [flags]\n\nCommands:\n")
 	for _, c := range commands {
-		fmt.Fprintf(os.Stderr, "  %-14s %s\n", c.name, c.usage)
+		fmt.Fprintf(os.Stderr, "  %-17s %s\n", c.name, c.usage)
 	}
 	fmt.Fprintf(os.Stderr, "\nConfiguration comes from HOARFROST_* environment variables and the .env file.\nRun 'hoarfrost <command> -h' for command flags.\n")
 }

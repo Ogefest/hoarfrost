@@ -58,8 +58,8 @@ func pageRow(p index.Page) PageRow {
 		OpenGraph: string(p.OpenGraph), Microformats: string(p.Microformats), Keywords: p.Keywords, Source: p.Source, Kind: p.Kind, Mime: p.Mime,
 		Status: int32(p.Status), TextLength: int32(p.TextLen), WARCFile: p.File, RecordID: p.RecordID, MetadataID: p.MetadataID,
 	}
-	if t, err := time.Parse(time.DateOnly, p.Published); err == nil {
-		r.Published = t
+	if !p.PublishedAt.IsZero() {
+		r.Published = p.PublishedAt.UTC()
 	}
 	return r
 }
@@ -144,6 +144,31 @@ func (a *Archive) WriteMissingParquet(ctx context.Context) ([]epoch.ID, error) {
 		done = append(done, c.Epoch)
 	}
 	return done, nil
+}
+
+// RewriteParquet writes the page table of a sealed epoch again from the
+// index and records its new hash in the catalog, after page metadata in
+// the index was corrected (repair-published). The packages stay as they
+// are: the page table is derived data, not part of them.
+func (a *Archive) RewriteParquet(ctx context.Context, ep epoch.ID) (*ParquetInfo, error) {
+	c, err := a.ReadCatalog(ctx, ep)
+	if err != nil {
+		return nil, err
+	}
+	info, err := a.Index.Epoch(ctx, a.name(), ep)
+	if err != nil {
+		return nil, err
+	}
+	if info.State != index.StateSealed && info.State != index.StateVerified {
+		return nil, fmt.Errorf("archive: %s is %s, not sealed", ep, info.State)
+	}
+	if c.Parquet, err = a.writeParquet(ctx, ep); err != nil {
+		return nil, fmt.Errorf("archive: page table of %s: %w", ep, err)
+	}
+	if err := a.WriteCatalog(ctx, c); err != nil {
+		return nil, err
+	}
+	return c.Parquet, nil
 }
 
 // ReadPageTable reads a page table (for verification and tests).

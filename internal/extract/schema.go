@@ -174,11 +174,86 @@ func People(objects []map[string]any) []string {
 	return out
 }
 
-// DatePublished returns the first datePublished of the objects.
+// DatePublished returns the publication date of the page stated by its
+// schema.org objects: the datePublished of the first article-like object
+// (Article, NewsArticle, BlogPosting…) among the top-level objects and
+// their main entities (mainEntity, @graph), searched breadth first so that
+// a top-level article wins over a nested one; else the
+// datePublished of the first top-level object that is not a media object,
+// an organization or a person. Dates of logos, images and publishers are
+// never taken (sites put the founding date of the brand there), nor those
+// of articles listed by the page (ItemList, hasPart, relatedLink).
 func DatePublished(objects []map[string]any) string {
+	level := make([]any, 0, len(objects))
 	for _, o := range objects {
-		if d, ok := o["datePublished"].(string); ok && d != "" {
-			return d
+		level = append(level, o)
+	}
+	for depth := 0; depth <= 6 && len(level) > 0; depth++ {
+		var next []any
+		for _, v := range level {
+			switch o := v.(type) {
+			case map[string]any:
+				if isArticle(o) {
+					if d := dateString(o["datePublished"]); d != "" {
+						return d
+					}
+				}
+				for _, k := range []string{"mainEntity", "@graph"} {
+					if x, ok := o[k]; ok {
+						next = append(next, x)
+					}
+				}
+			case []any:
+				next = append(next, o...)
+			}
+		}
+		level = next
+	}
+	for _, o := range objects {
+		if !isPeripheral(o) {
+			if d := dateString(o["datePublished"]); d != "" {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+// isArticle reports whether a schema.org object is a piece of writing that
+// a page publishes (all Article and Posting subtypes, Report, Review).
+func isArticle(o map[string]any) bool {
+	for _, t := range typesOf(o["@type"]) {
+		if strings.HasSuffix(t, "Article") || strings.HasSuffix(t, "Posting") || t == "Report" || t == "Review" {
+			return true
+		}
+	}
+	return false
+}
+
+// isPeripheral reports whether a schema.org object describes something
+// around the page rather than the page itself.
+func isPeripheral(o map[string]any) bool {
+	for _, t := range typesOf(o["@type"]) {
+		switch {
+		case strings.HasSuffix(t, "Object"), t == "Organization", t == "NewsMediaOrganization", t == "Person",
+			t == "Brand", t == "WebSite", t == "BreadcrumbList", t == "ListItem", t == "SiteNavigationElement", t == "WPHeader", t == "WPFooter":
+			return true
+		}
+	}
+	return false
+}
+
+// dateString returns a date given as a string or as the first string of a
+// list.
+func dateString(v any) string {
+	switch d := v.(type) {
+	case string:
+		return strings.TrimSpace(d)
+	case []any:
+		for _, x := range d {
+			if s := dateString(x); s != "" {
+				return s
+			}
 		}
 	}
 	return ""

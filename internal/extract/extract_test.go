@@ -279,3 +279,41 @@ func TestItemsNestedSchemaOrg(t *testing.T) {
 		t.Errorf("items %s", strings.Join(got, " "))
 	}
 }
+
+func TestDatePublishedNested(t *testing.T) {
+	logo := map[string]any{"@type": "ImageObject", "url": "logo.png", "datePublished": "1997-01-14"}
+	cases := []struct {
+		name    string
+		objects []map[string]any
+		want    string
+	}{
+		{"article in mainEntity, logo in breadcrumb first", []map[string]any{{
+			"@type": "WebPage",
+			"breadcrumb": map[string]any{"@type": "BreadcrumbList", "itemListElement": []any{
+				map[string]any{"@type": "ListItem", "position": 1.0, "item": map[string]any{"@type": "Website", "image": logo}},
+			}},
+			"mainEntity": map[string]any{
+				"@type": "Article", "datePublished": "2026-02-24T14:30:00Z",
+				"image":     map[string]any{"@type": "ImageObject", "datePublished": "2026-02-24T14:30:00Z"},
+				"publisher": map[string]any{"@type": "Organization", "logo": logo},
+			},
+		}}, "2026-02-24T14:30:00Z"},
+		{"graph", []map[string]any{{"@graph": []any{
+			map[string]any{"@type": "Organization", "logo": logo},
+			map[string]any{"@type": []any{"NewsArticle"}, "datePublished": "2026-03-01"},
+		}}}, "2026-03-01"},
+		{"top-level article beats nested one", []map[string]any{
+			{"@type": "BlogPosting", "datePublished": "2026-01-02", "hasPart": map[string]any{"@type": "Article", "datePublished": "2020-01-01"}},
+		}, "2026-01-02"},
+		{"top-level web page", []map[string]any{{"@type": "WebPage", "datePublished": "2026-04-05"}}, "2026-04-05"},
+		{"listing page", []map[string]any{{"@type": "CollectionPage"}, {"@type": "ItemList", "itemListElement": []any{
+			map[string]any{"@type": "ListItem", "item": map[string]any{"@type": "NewsArticle", "datePublished": "2026-10-31"}},
+		}}}, ""},
+		{"only logo dates", []map[string]any{{"@type": "Organization", "logo": logo}, logo}, ""},
+	}
+	for _, c := range cases {
+		if got := DatePublished(c.objects); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

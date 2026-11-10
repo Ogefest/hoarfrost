@@ -577,12 +577,21 @@ func insertedIDs(ctx context.Context, tx *sql.Tx, query string, args []any) ([]s
 	return ids, rows.Err()
 }
 
+// publishedLayouts are the date formats found in structured data, also
+// with a space instead of "T" ("2026-10-16 06:45:00+0200").
+var publishedLayouts = []string{
+	time.RFC3339Nano, "2006-01-02T15:04:05Z0700", "2006-01-02T15:04:05", "2006-01-02T15:04",
+	"2006-01-02 15:04:05Z07:00", "2006-01-02 15:04:05Z0700", "2006-01-02 15:04:05 Z0700", "2006-01-02 15:04:05", "2006-01-02 15:04",
+	time.DateOnly,
+}
+
 // published is the publication time of a page: the date stated by its
 // structured data (schema.org, Open Graph, microformats), else the date
 // found by the text extractor.
 func published(p recorder.PageInfo) any {
 	for _, v := range append(extract.PublishedDates(p.SchemaOrg, p.OpenGraph, p.Microformats), p.Published) {
-		for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05Z0700", "2006-01-02T15:04:05", "2006-01-02T15:04", time.DateOnly} {
+		v = strings.TrimSpace(v)
+		for _, layout := range publishedLayouts {
 			if t, err := time.Parse(layout, v); err == nil && t.Year() > 1900 {
 				return utc(t)
 			}
