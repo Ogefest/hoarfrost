@@ -452,6 +452,20 @@ func TestSourcesEditor(t *testing.T) {
 	if !strings.Contains(body, "2 found, 2 new") || !strings.Contains(body, "in 1 h") {
 		t.Fatalf("sources list lacks poll state:\n%s", body)
 	}
+	_, body = b.get(t, "/sources?q=NOWY")
+	if !strings.Contains(body, "/sources/nowy/edit") || strings.Contains(body, "/sources/test/edit") || !strings.Contains(body, "1 of 2 source(s)") {
+		t.Fatalf("filtered sources list:\n%s", body)
+	}
+	_, body = b.get(t, "/sources?status=disabled")
+	if !strings.Contains(body, "No source matches the filter.") {
+		t.Fatalf("disabled sources list:\n%s", body)
+	}
+	if resp, _ := b.post(t, "/sources/nowy/toggle", form("back", "/sources?q=nowy")); !strings.HasPrefix(resp.Header.Get("Location"), "/sources?q=nowy&msg=") {
+		t.Fatalf("toggle returns to %s", resp.Header.Get("Location"))
+	}
+	if resp, _ := b.post(t, "/sources/nowy/toggle", form("back", "https://evil.example/sources")); !strings.HasPrefix(resp.Header.Get("Location"), "/sources?msg=") {
+		t.Fatalf("toggle follows a foreign back link: %s", resp.Header.Get("Location"))
+	}
 
 	resp, body = b.post(t, "/sources/settings/defaults", form("poll", "x"))
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "poll interval") {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ogefest/hoarfrost/internal/index"
+	"github.com/ogefest/hoarfrost/internal/queue"
 )
 
 // overviewDays is the length of the per-day series in the overview.
@@ -18,7 +19,9 @@ const overviewDays = 30
 type Overview struct {
 	Index index.Stats
 	Queue map[string]int
-	At    time.Time
+	// QueueBySource counts the unfinished jobs of every source.
+	QueueBySource map[string]queue.SourceCounts
+	At            time.Time
 }
 
 type overviewCache struct {
@@ -70,6 +73,9 @@ func (c *Coordinator) refreshOverview(done chan struct{}) {
 	if err == nil {
 		o.Index = st
 		o.Queue, err = c.queue.Counts(ctx)
+	}
+	if err == nil {
+		o.QueueBySource, err = c.queue.CountsBySource(ctx)
 	}
 	oc := &c.overview
 	oc.mu.Lock()

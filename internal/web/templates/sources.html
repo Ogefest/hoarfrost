@@ -6,8 +6,27 @@
   <form method="post" action="/sources/poll" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>{{icon "refresh-cw"}}Poll all now</button></form>
   <a class="button" href="/sources/settings">{{icon "settings-2"}}Defaults and block lists</a>
 </div>
+<form class="search card" method="get" action="/sources">
+  <input type="search" name="q" value="{{$d.Filter.Q}}" placeholder="Filter by name, feed or sitemap…">
+  <select name="status">
+    <option value="">All sources</option>
+    <option value="enabled" {{if eq $d.Filter.Status "enabled"}}selected{{end}}>Enabled</option>
+    <option value="disabled" {{if eq $d.Filter.Status "disabled"}}selected{{end}}>Disabled</option>
+    <option value="errors" {{if eq $d.Filter.Status "errors"}}selected{{end}}>With poll errors</option>
+    <option value="queued" {{if eq $d.Filter.Status "queued"}}selected{{end}}>With queued jobs</option>
+  </select>
+  <select name="sort">
+    <option value="">Sort by name</option>
+    <option value="queued" {{if eq $d.Filter.Sort "queued"}}selected{{end}}>Most queued</option>
+    <option value="pages" {{if eq $d.Filter.Sort "pages"}}selected{{end}}>Most pages</option>
+    <option value="poll" {{if eq $d.Filter.Sort "poll"}}selected{{end}}>Last polled</option>
+  </select>
+  <button class="primary">{{icon "search"}}Filter</button>
+  {{if or $d.Filter.Q $d.Filter.Status $d.Filter.Sort}}<a class="button" href="/sources">Clear</a>{{end}}
+</form>
+<p class="muted">{{if ne $d.Matching $d.Total}}{{$d.Matching}} of {{end}}{{$d.Total}} source(s){{if not $d.QueueAt.IsZero}} · page and queue counts from <span title="{{datetime $d.QueueAt}}">{{ago $d.QueueAt}}</span>{{end}}</p>
 <table class="results">
-  <tr><th>Source</th><th>Inputs</th><th>Engine</th><th>Every</th><th>Last poll</th><th>Next poll</th><th class="num">Pages</th><th class="num">Fallback</th><th></th></tr>
+  <tr><th>Source</th><th>Inputs</th><th>Engine</th><th>Every</th><th>Last poll</th><th>Next poll</th><th class="num">Pages</th><th class="num" title="Jobs waiting for a worker (running in brackets)">Queued</th><th></th></tr>
   {{range $d.Rows}}
   <tr {{if not .Source.IsEnabled}}class="disabled"{{end}}>
     <td><a href="/sources/{{.Source.Name}}/edit"><b>{{.Source.Name}}</b></a>{{if ne .Resolved.Storage "default"}}<br><span class="tag">{{.Resolved.Storage}}</span>{{end}}</td>
@@ -17,17 +36,24 @@
     <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}{{if and .Status.Error (not .Status.LastSuccess.IsZero)}}<br><span class="muted">last success <span title="{{datetime .Status.LastSuccess}}">{{ago .Status.LastSuccess}}</span></span>{{end}}</td>
     <td>{{if .Source.IsEnabled}}{{until .NextPoll}}{{else}}<span class="muted">disabled</span>{{end}}</td>
     <td class="num">{{.Stats.Pages}}</td>
-    <td class="num {{if gt .Stats.FallbackRatio 0.3}}warn{{end}}">{{pct .Stats.FallbackRatio}}</td>
+    <td class="num">{{if .Queue.Queued}}{{.Queue.Queued}}{{else}}<span class="muted">0</span>{{end}}{{with .Queue.Leased}}<br><span class="muted small">({{.}} running)</span>{{end}}</td>
     <td class="nowrap">
       <a class="button" href="/sources/{{.Source.Name}}/edit">Edit</a>
       <button hx-post="/sources/{{.Source.Name}}/test" hx-target="next .result" hx-swap="innerHTML">Test</button>
-      <form method="post" action="/sources/{{.Source.Name}}/poll" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Poll now</button></form>
-      <form method="post" action="/sources/{{.Source.Name}}/toggle" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>{{if .Source.IsEnabled}}Disable{{else}}Enable{{end}}</button></form>
+      <form method="post" action="/sources/{{.Source.Name}}/poll" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="back" value="{{$d.Back}}"><button>Poll now</button></form>
+      <form method="post" action="/sources/{{.Source.Name}}/toggle" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="back" value="{{$d.Back}}"><button>{{if .Source.IsEnabled}}Disable{{else}}Enable{{end}}</button></form>
       <div class="result small"></div>
     </td>
   </tr>
-  {{else}}<tr><td colspan="9" class="muted">No sources yet. <a href="/sources/new">Add the first one</a>: an RSS/Atom feed, a sitemap or a list of URLs.</td></tr>{{end}}
+  {{else}}<tr><td colspan="9" class="muted">{{if $d.Total}}No source matches the filter.{{else}}No sources yet. <a href="/sources/new">Add the first one</a>: an RSS/Atom feed, a sitemap or a list of URLs.{{end}}</td></tr>{{end}}
 </table>
+{{if gt $d.Pages 1}}
+<nav class="pager">
+  {{if gt $d.Filter.Page 1}}<a href="{{query "/sources" "q" $d.Filter.Q "status" $d.Filter.Status "sort" $d.Filter.Sort "page" (sub $d.Filter.Page 1)}}">← Previous</a>{{end}}
+  <span>page {{$d.Filter.Page}} of {{$d.Pages}}</span>
+  {{if lt $d.Filter.Page $d.Pages}}<a href="{{query "/sources" "q" $d.Filter.Q "status" $d.Filter.Status "sort" $d.Filter.Sort "page" (add $d.Filter.Page 1)}}">Next →</a>{{end}}
+</nav>
+{{end}}
 <p class="muted small">Defaults: {{$d.Defaults.Engine}}{{with $d.Defaults.Options.Fallback}} → {{.}}{{end}}, every {{dur $d.Defaults.Poll}}, storage {{$d.Defaults.Storage}}.
 Block lists: {{$d.Rules}} rules{{with $d.Version}} (version <code>{{.}}</code>){{end}}. <a href="/sources/settings">Change</a>.
 Every change is copied to <code>config/sources/</code> in the archive.</p>
