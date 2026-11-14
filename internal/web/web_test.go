@@ -605,6 +605,7 @@ func TestAccountQueueAndEpochActions(t *testing.T) {
 	}
 
 	ep := epoch.Of(time.Now())
+	b.get(t, "/system") // caches the overview while the week is still open
 	resp, _ = b.post(t, "/system/epochs/default/"+string(ep)+"/seal", url.Values{"csrf": {b.csrf}, "force": {"1"}})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatal("seal action")
@@ -616,8 +617,15 @@ func TestAccountQueueAndEpochActions(t *testing.T) {
 	}
 	b.post(t, "/system/epochs/default/"+string(ep)+"/verify", url.Values{"csrf": {b.csrf}})
 	waitTask(t, e)
-	if _, body := b.get(t, "/system"); !strings.Contains(body, "verified") {
+	_, body = b.get(t, "/system")
+	if !strings.Contains(body, "verified") {
 		t.Fatal("system page does not show the verified week")
+	}
+	// The cached overview still has the open week's size; the page must
+	// show the sealed size from the week's own row.
+	info, _ = e.coord.Library().Index.Epoch(ctx, "", ep)
+	if size := `<td class="num">` + humanBytes(info.Size) + `</td>`; info.Size == 0 || !strings.Contains(body, size) {
+		t.Fatalf("system page does not show the size of the sealed week (%d bytes)", info.Size)
 	}
 	if resp, _ := b.post(t, "/system/epochs/default/bad/verify", url.Values{"csrf": {b.csrf}}); resp.StatusCode != http.StatusNotFound {
 		t.Fatal("bad epoch")
