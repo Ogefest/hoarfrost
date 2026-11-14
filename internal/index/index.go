@@ -312,8 +312,9 @@ var ErrNotFound = errors.New("index: not found")
 
 // DB is the archive index. Writes are serialized; reads run concurrently.
 type DB struct {
-	db *sql.DB
-	mu sync.Mutex
+	db    *sql.DB
+	mu    sync.Mutex
+	dedup *dedupCache
 }
 
 // Open connects to the index in schema (Schema in production) of the
@@ -328,7 +329,7 @@ func Open(ctx context.Context, url, schemaName string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("index schema: %w", err)
 	}
-	return &DB{db: db}, nil
+	return &DB{db: db, dedup: newDedupCache(dedupCacheSize)}, nil
 }
 
 func prepare(ctx context.Context, db *sql.DB, schemaName string) error {
@@ -806,13 +807,18 @@ func (v dedupView) Lookup(ctx context.Context, ep epoch.ID, digest string) (*rec
 	return v.d.Lookup(ctx, v.storage, ep, digest)
 }
 
-// Lookup returns the earliest committed full record with digest in the
-// storage and epoch.
+// Lookup returns a committed full record with digest in the storage and
+// epoch: the earliest one when it was first looked up, remembered after
+// that (see dedupCache).
 func (d *DB) Lookup(ctx context.Context, storage string, ep epoch.ID, digest string) (*recorder.Ref, error) {
+	key := dedupKey{StorageOr(storage), ep, digest}
+	if ref, ok := d.dedup.get(key); ok {
+		return &ref, nil
+	}
 	var ref recorder.Ref
 	err := d.db.QueryRowContext(ctx, `SELECT record_id, uri, date FROM records
 		WHERE storage = $1 AND epoch = $2 AND digest = $3 AND type IN ('response','resource')
-		ORDER BY date, record_id LIMIT 1`, StorageOr(storage), string(ep), digest).Scan(&ref.RecordID, &ref.URI, &ref.Date)
+		ORDER BY date, record_id LIMIT 1`, key.storage, string(ep), digest).Scan(&ref.RecordID, &ref.URI, &ref.Date)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -820,6 +826,7 @@ func (d *DB) Lookup(ctx context.Context, storage string, ep epoch.ID, digest str
 		return nil, err
 	}
 	ref.Date = ref.Date.UTC()
+	d.dedup.put(key, ref)
 	return &ref, nil
 }
 
@@ -1114,6 +1121,8 @@ type PageRow struct {
 // DeleteEpoch removes every row derived from an epoch of a storage; URLs
 // stay known.
 func (d *DB) DeleteEpoch(ctx context.Context, storage string, ep epoch.ID) error {
+	// Dropped also on failure: the delete may have been committed.
+	defer d.dedup.dropEpoch(StorageOr(storage), ep)
 	return d.write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM epochs WHERE storage = $1 AND epoch = $2`, StorageOr(storage), string(ep))
 		return err

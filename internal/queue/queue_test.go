@@ -327,3 +327,51 @@ func TestCountsBySource(t *testing.T) {
 		t.Fatalf("counts %+v", got)
 	}
 }
+
+func TestLeaseSeesJobsOfOtherProcesses(t *testing.T) {
+	q, c := newQueue(t)
+	ctx := context.Background()
+	q.Add(ctx, NewJob{URL: "https://a.pl/1", Source: "a", Engine: "static"}, NewJob{URL: "https://a.pl/2", Source: "a", Engine: "static"})
+	if jobs, _ := q.Lease(ctx, LeaseRequest{Worker: "w1", Engines: []string{"static"}, Max: 1, MaxPerDomain: 10, Duration: time.Hour}); len(jobs) != 1 {
+		t.Fatalf("jobs %+v", jobs)
+	}
+	// Another process (a CLI command) queues a job of a new group.
+	other := New(q.DB())
+	other.Now = c.now
+	if _, err := other.Add(ctx, NewJob{URL: "https://b.pl/1", Source: "b", Engine: "static", Priority: 10}); err != nil {
+		t.Fatal(err)
+	}
+	r := LeaseRequest{Worker: "w1", Engines: []string{"static"}, Max: 1, MaxPerDomain: 10, Duration: time.Hour}
+	if jobs, _ := q.Lease(ctx, r); len(jobs) != 1 || jobs[0].URL != "https://a.pl/2" {
+		t.Fatalf("cached groups: %+v", jobs)
+	}
+	q.Add(ctx, NewJob{URL: "https://a.pl/3", Source: "a", Engine: "static"})
+	c.add(q.HeadsTTL)
+	if jobs, _ := q.Lease(ctx, r); len(jobs) != 1 || jobs[0].URL != "https://b.pl/1" {
+		t.Fatalf("groups not read again after HeadsTTL: %+v", jobs)
+	}
+}
+
+func TestLeaseAfterRetryAndRelease(t *testing.T) {
+	q, c := newQueue(t)
+	ctx := context.Background()
+	q.Backoff = 0
+	ids, _ := q.Add(ctx, NewJob{URL: "https://a.pl/1", Source: "a", Engine: "static"})
+	r := LeaseRequest{Worker: "w1", Engines: []string{"static"}, Max: 1, MaxPerDomain: 10, Duration: time.Hour}
+	if jobs, _ := q.Lease(ctx, r); len(jobs) != 1 {
+		t.Fatal("not leased")
+	}
+	if _, err := q.Finish(ctx, ids[0], Outcome{Error: "timeout", Retry: true}); err != nil {
+		t.Fatal(err)
+	}
+	if jobs, _ := q.Lease(ctx, r); len(jobs) != 1 || jobs[0].ID != ids[0] {
+		t.Fatalf("retried job not leased again: %+v", jobs)
+	}
+	if err := q.Release(ctx, ids[0], "epoch closed"); err != nil {
+		t.Fatal(err)
+	}
+	c.add(time.Second) // within HeadsTTL
+	if jobs, _ := q.Lease(ctx, r); len(jobs) != 1 || jobs[0].ID != ids[0] {
+		t.Fatalf("released job not leased again: %+v", jobs)
+	}
+}
