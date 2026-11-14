@@ -621,3 +621,40 @@ func TestStructuredDataTables(t *testing.T) {
 		t.Errorf("%d rows left", left)
 	}
 }
+
+func TestLookupCacheDroppedWithEpoch(t *testing.T) {
+	db := openDB(t)
+	fixture(t, db)
+	ctx := context.Background()
+	if ref, _ := db.Lookup(ctx, "", "2026-W41", "sha1:CSS"); ref == nil {
+		t.Fatal("no record")
+	}
+	if ref, _ := db.Lookup(ctx, "", "2026-W41", "sha1:CSS"); ref == nil || ref.RecordID != "<r2>" {
+		t.Fatalf("cached lookup %+v", ref)
+	}
+	if err := db.DeleteEpoch(ctx, "", "2026-W41"); err != nil {
+		t.Fatal(err)
+	}
+	if ref, _ := db.Lookup(ctx, "", "2026-W41", "sha1:CSS"); ref != nil {
+		t.Fatalf("lookup after the epoch was deleted %+v", ref)
+	}
+}
+
+func TestDedupCacheBounded(t *testing.T) {
+	c := newDedupCache(2)
+	k := func(d string) dedupKey { return dedupKey{"default", "2026-W41", d} }
+	c.put(k("a"), recorder.Ref{RecordID: "<a>"})
+	c.put(k("b"), recorder.Ref{RecordID: "<b>"})
+	c.get(k("a")) // b is now the least recently used
+	c.put(k("c"), recorder.Ref{RecordID: "<c>"})
+	if _, ok := c.get(k("b")); ok {
+		t.Fatal("least recently used entry kept")
+	}
+	if r, ok := c.get(k("a")); !ok || r.RecordID != "<a>" {
+		t.Fatal("recently used entry evicted")
+	}
+	c.put(k("a"), recorder.Ref{RecordID: "<later>"})
+	if r, _ := c.get(k("a")); r.RecordID != "<a>" {
+		t.Fatal("first record found must be kept")
+	}
+}

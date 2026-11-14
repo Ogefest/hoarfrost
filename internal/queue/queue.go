@@ -67,13 +67,19 @@ type Queue struct {
 	// Backoff is the delay before a failed job is retried (multiplied by attempts).
 	Backoff time.Duration
 
+	// HeadsTTL is how long the first jobs of the groups of queued jobs are
+	// cached between leases (see headCache).
+	HeadsTTL time.Duration
+
 	servedMu sync.Mutex
 	served   map[string]time.Time // last lease per source, for taking turns
+
+	heads headCache
 }
 
 // New wraps an app.sqlite connection.
 func New(db *sql.DB) *Queue {
-	return &Queue{db: db, Now: time.Now, MaxAttempts: 3, Backoff: 5 * time.Minute, served: map[string]time.Time{}}
+	return &Queue{db: db, Now: time.Now, MaxAttempts: 3, Backoff: 5 * time.Minute, HeadsTTL: 30 * time.Second, served: map[string]time.Time{}}
 }
 
 // DB returns the application database the queue lives in.
@@ -105,9 +111,10 @@ func (q *Queue) tx(ctx context.Context, fn func(*sql.Tx) error) error {
 // Add enqueues jobs and returns their IDs.
 func (q *Queue) Add(ctx context.Context, jobs ...NewJob) ([]int64, error) {
 	var ids []int64
-	now := q.Now().UTC()
+	var added []queueHead
+	now := q.Now().UTC().Truncate(time.Microsecond)
 	err := q.tx(ctx, func(tx *sql.Tx) error {
-		ids = ids[:0]
+		ids, added = ids[:0], added[:0]
 		for _, j := range jobs {
 			if j.Priority == 0 {
 				j.Priority = 100
@@ -121,9 +128,16 @@ func (q *Queue) Add(ctx context.Context, jobs ...NewJob) ([]int64, error) {
 				return err
 			}
 			ids = append(ids, id)
+			added = append(added, queueHead{source: j.Source, domain: Domain(j.URL), storage: j.Storage, engine: j.Engine,
+				priority: j.Priority, created: now, id: id})
 		}
 		return nil
 	})
+	if err == nil {
+		q.heads.offer(added...)
+	} else {
+		q.heads.invalidate() // the inserts may have been committed
+	}
 	return ids, err
 }
 
@@ -164,7 +178,7 @@ func (q *Queue) Lease(ctx context.Context, r LeaseRequest) ([]Job, error) {
 			return err
 		}
 		for len(out) < r.Max {
-			id, err := q.pick(ctx, tx, r, now)
+			id, group, err := q.pick(ctx, tx, r, now)
 			if err != nil {
 				return err
 			}
@@ -179,10 +193,17 @@ func (q *Queue) Lease(ctx context.Context, r LeaseRequest) ([]Job, error) {
 				return err
 			}
 			out = append(out, j)
+			if group != nil {
+				if err := q.heads.advance(ctx, tx, *group); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
-	if err == nil {
+	if err != nil {
+		q.heads.invalidate() // changes to the cache were rolled back
+	} else {
 		q.servedMu.Lock()
 		for _, j := range out {
 			q.served[j.Source] = now
@@ -199,6 +220,114 @@ type queueHead struct {
 	priority                        int
 	created                         time.Time
 	id                              int64
+}
+
+// groupKey identifies a group of queued jobs.
+type groupKey struct{ source, domain, storage, engine string }
+
+func (h queueHead) key() groupKey { return groupKey{h.source, h.domain, h.storage, h.engine} }
+
+// before reports whether h comes before o in queue order.
+func (h queueHead) before(o queueHead) bool {
+	if h.priority != o.priority {
+		return h.priority < o.priority
+	}
+	if !h.created.Equal(o.created) {
+		return h.created.Before(o.created)
+	}
+	return h.id < o.id
+}
+
+// headCache keeps the first job of every group of queued jobs between
+// leases. Finding them skips through the jobs_fair index once per group,
+// thousands of index searches on a large backlog, which every lease would
+// otherwise repeat. The cache only orders the groups: the job leased from a
+// group is selected again in the database, so a stale head can change the
+// order sources and domains take turns in, never which jobs can be leased.
+// It is kept up to date by this process's leases and additions and loaded
+// again after TTL, for changes made by other processes and for groups
+// whose jobs wait for a retry.
+type headCache struct {
+	mu     sync.Mutex
+	heads  map[groupKey]queueHead // nil: not loaded
+	loaded time.Time
+}
+
+// load returns the heads, reading them in tx when not loaded or older than
+// ttl.
+func (c *headCache) load(ctx context.Context, tx *sql.Tx, now time.Time, ttl time.Duration) ([]queueHead, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.heads == nil || ttl <= 0 || now.Sub(c.loaded) >= ttl || now.Before(c.loaded) {
+		all, err := queueHeads(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		c.heads = make(map[groupKey]queueHead, len(all))
+		for _, h := range all {
+			c.heads[h.key()] = h
+		}
+		c.loaded = now
+	}
+	out := make([]queueHead, 0, len(c.heads))
+	for _, h := range c.heads {
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// offer records queued jobs that may come first in their groups.
+func (c *headCache) offer(hs ...queueHead) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.heads == nil {
+		return
+	}
+	for _, h := range hs {
+		if cur, ok := c.heads[h.key()]; !ok || h.before(cur) {
+			c.heads[h.key()] = h
+		}
+	}
+}
+
+// advance reads the head of a group after its first job was leased.
+func (c *headCache) advance(ctx context.Context, tx *sql.Tx, k groupKey) error {
+	var h queueHead
+	err := tx.QueryRowContext(ctx, `SELECT source, domain, storage, engine, priority, created, id FROM jobs
+		WHERE state = 'queued' AND source = $1 AND domain = $2 AND storage = $3 AND engine = $4
+		ORDER BY priority, created, id LIMIT 1`, k.source, k.domain, k.storage, k.engine).
+		Scan(&h.source, &h.domain, &h.storage, &h.engine, &h.priority, &h.created, &h.id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.heads == nil {
+		return nil
+	}
+	if err != nil {
+		delete(c.heads, k)
+	} else {
+		c.heads[k] = h
+	}
+	return nil
+}
+
+// forget drops a group none of whose jobs can be leased now; it is read
+// again with the next load.
+func (c *headCache) forget(k groupKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.heads != nil {
+		delete(c.heads, k)
+	}
+}
+
+// invalidate makes the next lease read the heads again.
+func (c *headCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.heads = nil
 }
 
 // runningJobs counts running jobs per source and per domain.
@@ -248,11 +377,13 @@ func queueHeads(ctx context.Context, tx *sql.Tx) ([]queueHead, error) {
 	return out, rows.Err()
 }
 
-// pick returns the ID of the next job to lease, 0 when there is none.
-func (q *Queue) pick(ctx context.Context, tx *sql.Tx, r LeaseRequest, now time.Time) (int64, error) {
+// pick returns the ID of the next job to lease, 0 when there is none, and
+// the group of queued jobs it was taken from (nil for a job whose lease
+// expired).
+func (q *Queue) pick(ctx context.Context, tx *sql.Tx, r LeaseRequest, now time.Time) (int64, *groupKey, error) {
 	running, perDomain, err := runningJobs(ctx, tx, now)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	full := []string{} // not nil: "<> ALL(NULL)" matches nothing
 	for d, n := range perDomain {
@@ -280,15 +411,15 @@ func (q *Queue) pick(ctx context.Context, tx *sql.Tx, r LeaseRequest, now time.T
 		  AND domain <> ALL(?)
 		ORDER BY priority, created, id LIMIT 1 FOR UPDATE SKIP LOCKED`), args...).Scan(&id)
 	if err == nil {
-		return id, nil
+		return id, nil, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
+		return 0, nil, err
 	}
 
-	all, err := queueHeads(ctx, tx)
+	all, err := q.heads.load(ctx, tx, now, q.HeadsTTL)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	var heads []queueHead
 	for _, h := range all {
@@ -299,16 +430,7 @@ func (q *Queue) pick(ctx context.Context, tx *sql.Tx, r LeaseRequest, now time.T
 	}
 	// Queue order inside a source; the first head of a source sets its
 	// priority.
-	sort.Slice(heads, func(i, j int) bool {
-		a, b := heads[i], heads[j]
-		if a.priority != b.priority {
-			return a.priority < b.priority
-		}
-		if !a.created.Equal(b.created) {
-			return a.created.Before(b.created)
-		}
-		return a.id < b.id
-	})
+	sort.Slice(heads, func(i, j int) bool { return heads[i].before(heads[j]) })
 	first := map[string]int{}
 	var sources []string
 	for i, h := range heads {
@@ -340,14 +462,17 @@ func (q *Queue) pick(ctx context.Context, tx *sql.Tx, r LeaseRequest, now time.T
 				  AND (not_before IS NULL OR not_before <= $5)
 				ORDER BY priority, created, id LIMIT 1 FOR UPDATE SKIP LOCKED`, h.source, h.domain, h.storage, h.engine, now).Scan(&id)
 			if err == nil {
-				return id, nil
+				k := h.key()
+				return id, &k, nil
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
-				return 0, err
+				return 0, nil, err
 			}
+			// Empty, waiting for a retry or locked by another process.
+			q.heads.forget(h.key())
 		}
 	}
-	return 0, nil
+	return 0, nil, nil
 }
 
 // Outcome reports the end of a capture attempt.
@@ -365,6 +490,7 @@ var ErrNotFound = errors.New("queue: job not found")
 func (q *Queue) Finish(ctx context.Context, id int64, o Outcome) (bool, error) {
 	now := q.Now()
 	changed := false
+	var requeued queueHead
 	err := q.tx(ctx, func(tx *sql.Tx) error {
 		var state string
 		var attempts int
@@ -384,14 +510,22 @@ func (q *Queue) Finish(ctx context.Context, id int64, o Outcome) (bool, error) {
 			_, err = tx.ExecContext(ctx, `UPDATE jobs SET state = 'done', finished = $1, capture = $2, last_error = NULL, lease_until = NULL WHERE id = $3`,
 				now, o.Capture, id)
 		case o.Retry && attempts < q.MaxAttempts:
-			_, err = tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', last_error = $1, lease_until = NULL, not_before = $2, capture = coalesce($3, capture) WHERE id = $4`,
-				o.Error, now.Add(q.Backoff*time.Duration(attempts)), nullable(o.Capture), id)
+			h := &requeued
+			err = tx.QueryRowContext(ctx, `UPDATE jobs SET state = 'queued', last_error = $1, lease_until = NULL, not_before = $2, capture = coalesce($3, capture) WHERE id = $4
+				RETURNING source, domain, storage, engine, priority, created, id`,
+				o.Error, now.Add(q.Backoff*time.Duration(attempts)), nullable(o.Capture), id).
+				Scan(&h.source, &h.domain, &h.storage, &h.engine, &h.priority, &h.created, &h.id)
 		default:
 			_, err = tx.ExecContext(ctx, `UPDATE jobs SET state = 'failed', finished = $1, last_error = $2, lease_until = NULL, capture = coalesce($3, capture) WHERE id = $4`,
 				now, o.Error, nullable(o.Capture), id)
 		}
 		return err
 	})
+	if err != nil {
+		q.heads.invalidate()
+	} else if requeued.id != 0 {
+		q.heads.offer(requeued)
+	}
 	return changed, err
 }
 
@@ -404,15 +538,28 @@ func nullable(s string) any {
 
 // Release returns a leased job to the queue without counting the attempt.
 func (q *Queue) Release(ctx context.Context, id int64, reason string) error {
-	return q.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', lease_until = NULL, epoch = NULL,
-			attempts = GREATEST(attempts - 1, 0), last_error = $1 WHERE id = $2 AND state = 'leased'`, reason, id)
+	var h queueHead
+	err := q.tx(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx, `UPDATE jobs SET state = 'queued', lease_until = NULL, epoch = NULL,
+			attempts = GREATEST(attempts - 1, 0), last_error = $1 WHERE id = $2 AND state = 'leased'
+			RETURNING source, domain, storage, engine, priority, created, id`, reason, id).
+			Scan(&h.source, &h.domain, &h.storage, &h.engine, &h.priority, &h.created, &h.id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
 		return err
 	})
+	if err != nil {
+		q.heads.invalidate()
+	} else if h.id != 0 {
+		q.heads.offer(h)
+	}
+	return err
 }
 
 // Retry requeues a failed job with a fresh attempt counter.
 func (q *Queue) Retry(ctx context.Context, id int64) error {
+	defer q.heads.invalidate()
 	return q.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', attempts = 0, not_before = NULL, lease_until = NULL, finished = NULL
 			WHERE id = $1 AND state = 'failed'`, id)
@@ -429,6 +576,7 @@ func (q *Queue) Retry(ctx context.Context, id int64) error {
 // RetryAllFailed requeues every failed job.
 func (q *Queue) RetryAllFailed(ctx context.Context) (int64, error) {
 	var n int64
+	defer q.heads.invalidate()
 	err := q.tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE jobs SET state = 'queued', attempts = 0, not_before = NULL, lease_until = NULL, finished = NULL WHERE state = 'failed'`)
 		if err != nil {
