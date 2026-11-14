@@ -174,6 +174,13 @@ func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
 			d.Sizes[e.Storage+"/"+string(e.Epoch)] = e.Bytes
 		}
 	}
+	// The overview is a cached snapshot and misses weeks indexed since it
+	// was taken; a sealed week's size is in its own row, read just now.
+	for _, e := range d.Epochs {
+		if e.State == index.StateSealed || e.State == index.StateVerified {
+			d.Sizes[e.Storage+"/"+string(e.Epoch)] = e.Size
+		}
+	}
 	for _, arc := range s.lib.All() {
 		if cats, err := arc.Catalogs(ctx); err == nil {
 			for _, c := range cats {
