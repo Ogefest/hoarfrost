@@ -149,8 +149,9 @@ jobs:
           } > notes.md
           # Upgrade notes written in the annotated tag message, if any.
           git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          msg=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/^-----BEGIN/,$d')
-          if [ -n "$msg" ] && [ "$msg" != "$GITHUB_REF_NAME" ]; then
+          # The body of the tag message, without its subject line.
+          msg=$(git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME" | sed '/^-----BEGIN/,$d')
+          if [ -n "${msg//[[:space:]]/}" ]; then
             { echo "## Upgrade notes"; echo; echo "$msg"; echo; } >> notes.md
           fi
           gh release create "$GITHUB_REF_NAME" dist/* --title "hoarfrost $VERSION" \
