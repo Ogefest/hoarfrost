@@ -227,19 +227,30 @@ type sourceRow struct {
 	Queue    queue.SourceCounts
 }
 
-// matches reports whether the name or an input of the source contains q.
+// filterWords splits a filter query into lower-cased words; spaces and the
+// separators of names and URLs (_ . - / :) all separate words, so "pb
+// archive" and "pb.pl" both find pb_pl_archive.
+func filterWords(q string) []string {
+	return strings.FieldsFunc(strings.ToLower(q), func(c rune) bool {
+		return c == ' ' || c == '\t' || c == '_' || c == '.' || c == '-' || c == '/' || c == ':'
+	})
+}
+
+// matches reports whether every word of q is part of the name or an input
+// of the source (not necessarily the same one).
 func (r sourceRow) matches(q string) bool {
-	if q == "" || strings.Contains(strings.ToLower(r.Source.Name), q) {
-		return true
-	}
+	fields := []string{strings.ToLower(r.Source.Name)}
 	for _, list := range [][]string{r.Source.Feeds, r.Source.Sitemaps, r.Source.URLs} {
 		for _, u := range list {
-			if strings.Contains(strings.ToLower(u), q) {
-				return true
-			}
+			fields = append(fields, strings.ToLower(u))
 		}
 	}
-	return false
+	for _, w := range filterWords(q) {
+		if !slices.ContainsFunc(fields, func(f string) bool { return strings.Contains(f, w) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // Source list filters.
@@ -277,7 +288,7 @@ func (f sourcesFilter) keep(r sourceRow) bool {
 			return false
 		}
 	}
-	return r.matches(strings.ToLower(strings.TrimSpace(f.Q)))
+	return r.matches(f.Q)
 }
 
 func (f sourcesFilter) sort(rows []sourceRow) {
