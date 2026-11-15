@@ -50,13 +50,14 @@ HOARFROST_WORKERS=2                            # parallel captures of the embedd
 ./hoarfrost serve
 ```
 
-With Docker, the same image runs `serve` by default:
+With Docker, the same image runs `serve` by default (for a complete setup
+with PostgreSQL see [install.md](install.md)):
 
 ```sh
 docker run -d --name hoarfrost -p 8080:8080 \
   -e HOARFROST_DATABASE=… -e HOARFROST_SECRET=… -e HOARFROST_STORAGE=file:///srv/archive \
   -v hoarfrost-data:/var/lib/hoarfrost -v /srv/archive:/srv/archive \
-  hoarfrost:latest
+  ghcr.io/ogefest/hoarfrost:latest
 ```
 
 Open the UI, create the administrator and add sources. The image contains
@@ -89,7 +90,7 @@ address.
    ./hoarfrost worker                                   # or: -coordinator URL -slots 4 -engines chrome
    ```
 
-   With Docker: `docker run -d -e … --tmpfs /var/lib/hoarfrost hoarfrost:latest worker`.
+   With Docker: `docker run -d -e … --tmpfs /var/lib/hoarfrost ghcr.io/ogefest/hoarfrost:latest worker`.
    The data directory holds only the spool, so it may be temporary.
 
 3. **Check** that the worker appears under Workers on the Dashboard, with

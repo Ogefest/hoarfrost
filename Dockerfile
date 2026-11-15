@@ -1,18 +1,29 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-bookworm AS build
+# The Go stage runs on the build machine and cross-compiles for the target
+# platform, so multi-platform images build without emulating the compiler.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/ogefest/hoarfrost/internal/version.Version=${VERSION}" -o /out/hoarfrost ./cmd/hoarfrost \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/hoarfrost-testsite ./cmd/testsite
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X github.com/ogefest/hoarfrost/internal/version.Version=${VERSION}" -o /out/hoarfrost ./cmd/hoarfrost \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" -o /out/hoarfrost-testsite ./cmd/testsite
 
 FROM debian:bookworm-slim
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="hoarfrost" \
+      org.opencontainers.image.description="Self-hosted web archiving for news articles and web pages" \
+      org.opencontainers.image.source="https://github.com/Ogefest/hoarfrost" \
+      org.opencontainers.image.documentation="https://github.com/Ogefest/hoarfrost/blob/main/docs/install.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.version="${VERSION}"
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini chromium fonts-dejavu-core fonts-noto-color-emoji poppler-utils \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --create-home --home-dir /var/lib/hoarfrost hoarfrost
+ && useradd --system --create-home --home-dir /var/lib/hoarfrost hoarfrost \
+ && install -d -o hoarfrost -g hoarfrost /srv/archive
 COPY --from=build /out/ /usr/local/bin/
 USER hoarfrost
 WORKDIR /var/lib/hoarfrost

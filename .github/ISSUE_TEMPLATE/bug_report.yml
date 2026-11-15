@@ -1,0 +1,23 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `hoarfrost version` (or `docker compose exec hoarfrost hoarfrost version`), also shown in the footer of every page.
+      placeholder: hoarfrost/0.1.0
+    validations: { required: true }
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is it installed?
+      options: [docker compose (deploy/compose.yaml), docker run, release binary, built from source]
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Steps to reproduce, URLs of affected sources if public, relevant log lines (`docker compose logs hoarfrost`). Remove secrets.
+    validations: { required: true }

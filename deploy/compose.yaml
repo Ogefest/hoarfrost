@@ -1,0 +1,46 @@
+# hoarfrost: a complete instance with PostgreSQL, from the released image.
+# See docs/install.md. In short:
+#
+#   curl -LO https://github.com/Ogefest/hoarfrost/releases/latest/download/compose.yaml
+#   curl -L -o .env https://github.com/Ogefest/hoarfrost/releases/latest/download/install.env
+#   # set the three secrets in .env (the file says how), then:
+#   docker compose up -d
+#   open http://localhost:8080 and create the administrator
+#
+# Upgrade: set HOARFROST_VERSION in .env (or keep "latest"), then
+#   docker compose pull && docker compose up -d
+# Database migrations run on start; read the release notes first.
+name: hoarfrost
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hoarfrost
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: hoarfrost
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hoarfrost"]
+      interval: 2s
+      retries: 30
+
+  hoarfrost:
+    image: ${HOARFROST_IMAGE:-ghcr.io/ogefest/hoarfrost}:${HOARFROST_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    env_file: [.env]
+    environment:
+      HOARFROST_DATABASE: postgres://hoarfrost:${POSTGRES_PASSWORD}@postgres:5432/hoarfrost?sslmode=disable
+      HOARFROST_STORAGE: ${HOARFROST_STORAGE:-file:///srv/archive}
+    volumes:
+      - data:/var/lib/hoarfrost
+      - ${HOARFROST_ARCHIVE_DIR:-archive}:/srv/archive
+    ports: ["${HOARFROST_BIND:-127.0.0.1}:${HOARFROST_PORT:-8080}:8080"]
+
+volumes:
+  postgres:
+  data:
+  archive:
