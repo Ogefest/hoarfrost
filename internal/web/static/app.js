@@ -126,3 +126,22 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();
+
+// Save page opened by the bookmarklet: close its window once queued. The
+// bookmarklet on the account page is for dragging, not for clicking there.
+(function () {
+  "use strict";
+  function init() {
+    if (document.querySelector("[data-autoclose]") && window.name === "hoarfrost") {
+      setTimeout(function () { window.close(); }, 1500);
+    }
+    document.querySelectorAll("a[data-bookmarklet]").forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        a.title = "Drag this button to the bookmarks bar";
+      });
+    });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
+})();

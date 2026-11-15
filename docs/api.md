@@ -118,6 +118,7 @@ so deduplicate by `captureId`.
 |---|---|---|---|
 | POST | `/api/urls` | editor | queue a URL now (bypasses the seen-URL filter); JSON `{url, source?, engine?, storage?}` |
 | POST | `/api/upload` | editor | upload MHTML, SingleFile HTML, WACZ or WARC |
+| GET | `/save?url=&k=` | editor (session) | used by the bookmarklet from the account page: queues `url` with source `bookmarklet` when `k` is the user's bookmarklet key, otherwise asks for a confirmation |
 | GET | `/api/sources` | editor | sources with poll state, defaults and block list settings |
 | PUT | `/api/sources/{name}` | editor | create (201) or replace (200) a source |
 | DELETE | `/api/sources/{name}` | editor | delete a source; its archived pages stay |

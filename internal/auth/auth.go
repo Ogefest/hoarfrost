@@ -373,3 +373,19 @@ func (s *Store) DeleteToken(ctx context.Context, id, userID int64) error {
 	}
 	return nil
 }
+
+// BookmarkletKey returns the key that lets the user's bookmarklet queue the
+// page being viewed without a confirmation. It is derived from the password
+// hash, so changing the password revokes every bookmarklet of the user.
+func (s *Store) BookmarkletKey(ctx context.Context, userID int64) (string, error) {
+	var hash string
+	if err := s.db.QueryRowContext(ctx, `SELECT pwhash FROM users WHERE id = $1`, userID).Scan(&hash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	m := hmac.New(sha256.New, []byte(hash))
+	fmt.Fprintf(m, "hoarfrost bookmarklet %d", userID)
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil)[:18]), nil
+}

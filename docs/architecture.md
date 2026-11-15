@@ -269,6 +269,17 @@ Below a per-source threshold the job is repeated with the fallback engine
 (usually `chrome`). Fallback rates per source are shown in the UI and suggest
 changing a source's default engine.
 
+**Bookmarklet.** The account page of an editor offers a bookmarklet to drag
+to the bookmarks bar. On any page it opens `/save?url=…&k=…` of the instance
+in a small window, which queues the URL as a regular capture (source
+`bookmarklet`) and closes itself. The page is fetched again by the server, so
+this suits public pages; a page that needs the reader's login is better saved
+with the browser extension. `k` is a per-user key, an HMAC of the user's
+password hash: it keeps other websites from making a signed-in browser queue
+URLs, and changing the password revokes it. Without a valid key the page asks
+for a confirmation (a form with the CSRF token). A signed-out browser goes
+through the login and back.
+
 **Browser uploads** (MHTML, SingleFile HTML, WACZ/WARC from ArchiveWeb.page)
 do not go through an engine: they are written as `resource` records (WACZ
 contents are rewritten into a new WARC file with sensitive headers removed

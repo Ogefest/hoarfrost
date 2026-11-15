@@ -253,3 +253,4 @@ h1 + .url { margin-top: -14px; }
 .combo-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 table.results.archive .desc { color: var(--muted); font-size: 13px; margin: 2px 0; }
 table.results.archive td { vertical-align: top; }
+.breakall { overflow-wrap: anywhere; }

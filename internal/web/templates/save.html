@@ -1,0 +1,24 @@
+{{define "content"}}
+{{$d := .Data}}
+<section class="narrow card">
+  <h1><img class="logo" src="/static/logo.svg?v={{version}}" alt="" width="20" height="20"> Save page</h1>
+  {{if $d.Queued}}
+  <div class="flash ok" data-autoclose>Queued for capture.</div>
+  {{with $d.Title}}<p><strong>{{.}}</strong></p>{{end}}
+  <p class="muted breakall">{{$d.URL}}</p>
+  <p><a href="/queue">Open the queue</a></p>
+  {{else}}
+  {{with $d.Error}}<div class="flash err">{{.}}</div>{{end}}
+  {{if $d.URL}}
+  <form method="post" action="/save">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="url" value="{{$d.URL}}">
+    <input type="hidden" name="title" value="{{$d.Title}}">
+    {{with $d.Title}}<p><strong>{{.}}</strong></p>{{end}}
+    <p class="muted breakall">{{$d.URL}}</p>
+    <button class="primary wide" autofocus>Queue for capture</button>
+  </form>
+  {{end}}
+  {{end}}
+</section>
+{{end}}
