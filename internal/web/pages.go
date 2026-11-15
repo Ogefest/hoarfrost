@@ -34,13 +34,48 @@ type dashboardData struct {
 	MaxEpoch   int64
 	MaxDay     int64
 	Queue      map[string]int
-	Failed     []queue.Job
-	Workers    []coordinator.WorkerStatus
-	Active     []string
 	SealErrors map[string]string
 	Ratio      float64
 	At         time.Time // when the totals were computed
+	Live       liveData
 }
+
+// liveData is the part of the dashboard read on every request and
+// refreshed in place: cheap queries on recent captures and running jobs.
+type liveData struct {
+	At          time.Time
+	Minutes     []index.TimeCount // last hour, per minute
+	MaxMinute   int64
+	Hours       []index.TimeCount // last 24 hours, per hour
+	MaxHour     int64
+	LastHour    int64 // pages captured in the last 60 minutes
+	Done        int   // jobs done in the last hour
+	Failed      int   // jobs failed in the last hour
+	Workers     []workerRow
+	Online      int // workers seen in the last minute
+	Running     int // jobs under lease
+	Slots       int // capture slots of the embedded worker
+	Active      []string
+	Sources     []sourceActivityRow
+	RecentFails []queue.Job
+}
+
+type workerRow struct {
+	Name     string
+	LastSeen time.Time
+	Leases   int
+	Running  int
+	Online   bool
+}
+
+type sourceActivityRow struct {
+	index.SourceActivity
+	Queued int
+	Poll   coordinator.SourceStatus
+}
+
+// dashboardSources is how many recently active sources the dashboard lists.
+const dashboardSources = 12
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -50,7 +85,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := ov.Index
-	d := dashboardData{Stats: st, Queue: ov.Queue, At: ov.At, Workers: s.Coord.Workers(), SealErrors: s.Coord.SealErrors(ctx)}
+	d := dashboardData{Stats: st, Queue: ov.Queue, At: ov.At, SealErrors: s.Coord.SealErrors(ctx), Live: s.live(ctx, ov)}
 	if len(d.Stats.EpochSizes) > 12 {
 		d.Stats.EpochSizes = d.Stats.EpochSizes[:12]
 	}
@@ -63,11 +98,72 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if st.Bytes+st.DedupSaved > 0 {
 		d.Ratio = float64(st.DedupSaved) / float64(st.Bytes+st.DedupSaved)
 	}
-	d.Failed, _ = s.queue.List(ctx, queue.Failed, 5, 0)
+	s.render(w, r, "dashboard.html", "Dashboard", d)
+}
+
+// dashboardLive renders the live part of the dashboard for htmx polling.
+func (s *Server) dashboardLive(w http.ResponseWriter, r *http.Request) {
+	ov, _ := s.Coord.Overview(r.Context())
+	s.fragment(w, r, "dashboard.html", "live", dashboardData{Live: s.live(r.Context(), ov)})
+}
+
+func (s *Server) live(ctx context.Context, ov coordinator.Overview) liveData {
+	now := time.Now()
+	d := liveData{At: now, Slots: s.Slots}
+	var err error
+	if d.Minutes, err = s.idx.CapturedSeries(ctx, now, time.Minute, 60); err != nil {
+		s.Log.Warn("dashboard: captures per minute", "err", err)
+	}
+	for _, m := range d.Minutes {
+		d.MaxMinute = max(d.MaxMinute, m.Pages)
+		d.LastHour += m.Pages
+	}
+	if d.Hours, err = s.idx.CapturedSeries(ctx, now, time.Hour, 24); err != nil {
+		s.Log.Warn("dashboard: captures per hour", "err", err)
+	}
+	for _, h := range d.Hours {
+		d.MaxHour = max(d.MaxHour, h.Pages)
+	}
+	if d.Done, d.Failed, err = s.queue.FinishedSince(ctx, now.Add(-time.Hour)); err != nil {
+		s.Log.Warn("dashboard: finished jobs", "err", err)
+	}
+
+	running, err := s.queue.RunningByWorker(ctx)
+	if err != nil {
+		s.Log.Warn("dashboard: running jobs", "err", err)
+	}
+	seen := map[string]bool{}
+	for _, ws := range s.Coord.Workers() {
+		seen[ws.Name] = true
+		d.Workers = append(d.Workers, workerRow{Name: ws.Name, LastSeen: ws.LastSeen, Leases: ws.Leases, Running: running[ws.Name],
+			Online: now.Sub(ws.LastSeen) < time.Minute})
+	}
+	for name, n := range running { // leases of workers this process has not heard from
+		if !seen[name] {
+			d.Workers = append(d.Workers, workerRow{Name: name, Running: n})
+		}
+	}
+	slices.SortFunc(d.Workers, func(a, b workerRow) int { return strings.Compare(a.Name, b.Name) })
+	for _, wr := range d.Workers {
+		d.Running += wr.Running
+		if wr.Online {
+			d.Online++
+		}
+	}
 	if s.Active != nil {
 		d.Active = s.Active()
 	}
-	s.render(w, r, "dashboard.html", "Dashboard", d)
+
+	recent, err := s.idx.RecentSources(ctx, now.Add(-24*time.Hour), dashboardSources)
+	if err != nil {
+		s.Log.Warn("dashboard: recent sources", "err", err)
+	}
+	polls := s.Coord.SourceStatuses(ctx)
+	for _, a := range recent {
+		d.Sources = append(d.Sources, sourceActivityRow{SourceActivity: a, Queued: ov.QueueBySource[a.Source].Queued, Poll: polls[a.Source]})
+	}
+	d.RecentFails, _ = s.queue.List(ctx, queue.Failed, 5, 0)
+	return d
 }
 
 type archiveData struct {

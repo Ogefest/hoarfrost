@@ -164,6 +164,13 @@ h1 .tag { font-size: 12px; }
 .bars { display: flex; align-items: flex-end; gap: 4px; height: 140px; padding-top: 8px; }
 .bar { flex: 0 1 28px; height: 100%; display: flex; align-items: flex-end; }
 .bar span { display: block; width: 100%; background: color-mix(in srgb, var(--accent) 70%, transparent); border-radius: 4px 4px 1px 1px; min-height: 2px; transition: background .15s; }
+.bars.dense { gap: 1px; }
+.bars.dense .bar span { border-radius: 2px 2px 0 0; }
+.chart-card { display: flex; flex-direction: column; }
+.chart-card .bars { flex: 1 1 auto; height: auto; min-height: 140px; }
+.chart-card h2 + .bars { margin-top: 0; }
+.chart-card .axis + h2 { margin-top: 20px; }
+.axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 4px; }
 .bar:hover span { background: var(--accent); }
 td.meter { width: 30%; vertical-align: middle; }
 td.meter { background: linear-gradient(var(--soft), var(--soft)) no-repeat center / calc(100% - 16px) 6px; background-origin: content-box; }

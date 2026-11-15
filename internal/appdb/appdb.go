@@ -136,6 +136,9 @@ CREATE TABLE seal_runs (
 );
 CREATE INDEX seal_runs_epoch ON seal_runs(storage, epoch, started);
 CREATE INDEX seal_runs_open ON seal_runs(heartbeat) WHERE outcome IS NULL;
+`, `
+-- Jobs by the time they ended, for the throughput shown on the dashboard.
+CREATE INDEX jobs_finished ON jobs(finished) WHERE finished IS NOT NULL;
 `}
 
 // Open connects to the database at url, uses schema (Schema in production)

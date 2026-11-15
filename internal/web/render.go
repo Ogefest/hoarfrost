@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +29,11 @@ var funcs = template.FuncMap{
 		}
 		return fmtTime(t, "2006-01-02 15:04")
 	},
-	"ago":     ago,
+	"ago":   ago,
+	"clock": func(t time.Time) string { return fmtTime(t, "15:04") },
+	"perMinute": func(perHour int64) string {
+		return strconv.FormatFloat(float64(perHour)/60, 'f', 1, 64)
+	},
 	"pct":     func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
 	"can":     auth.Can,
 	"version": func() string { return version.Version },

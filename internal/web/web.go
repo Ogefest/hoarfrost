@@ -44,6 +44,8 @@ type Server struct {
 	WorkerToken string
 	// Active lists URLs being captured by the embedded worker.
 	Active func() []string
+	// Slots is the number of parallel captures of the embedded worker.
+	Slots int
 	// Storage describes configured backends for the system page.
 	Storage []string
 
@@ -98,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	reader := func(p string, h http.HandlerFunc) { mux.Handle(p, s.requireRead(h)) }
 
 	viewer("GET /{$}", s.dashboard)
+	viewer("GET /dashboard/live", s.dashboardLive)
 	viewer("GET /archive", s.archivePage)
 	viewer("GET /page/{id}", s.pageView)
 	viewer("GET /page/{id}/preview", s.preview)

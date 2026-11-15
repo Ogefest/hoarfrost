@@ -35,7 +35,7 @@
     <td>{{dur .Resolved.Poll}}</td>
     <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}{{if and .Status.Error (not .Status.LastSuccess.IsZero)}}<br><span class="muted">last success <span title="{{datetime .Status.LastSuccess}}">{{ago .Status.LastSuccess}}</span></span>{{end}}</td>
     <td>{{if .Source.IsEnabled}}{{until .NextPoll}}{{else}}<span class="muted">disabled</span>{{end}}</td>
-    <td class="num">{{.Stats.Pages}}</td>
+    <td class="num">{{.Stats.Pages}}{{if .Stats.Fallbacks}}<br><span class="small {{if gt .Stats.FallbackRatio 0.3}}warn{{else}}muted{{end}}" title="Pages captured again with the fallback engine because the first capture had too little text; a high share suggests switching the source to that engine">{{pct .Stats.FallbackRatio}} fallback</span>{{end}}{{if .Stats.Short}}<br><span class="muted small" title="Pages with under 200 characters of text">{{.Stats.Short}} short</span>{{end}}</td>
     <td class="num">{{if .Queue.Queued}}{{.Queue.Queued}}{{else}}<span class="muted">0</span>{{end}}{{with .Queue.Leased}}<br><span class="muted small">({{.}} running)</span>{{end}}</td>
     <td class="nowrap">
       <a class="button" href="/sources/{{.Source.Name}}/edit">Edit</a>

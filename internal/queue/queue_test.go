@@ -375,3 +375,40 @@ func TestLeaseAfterRetryAndRelease(t *testing.T) {
 		t.Fatalf("released job not leased again: %+v", jobs)
 	}
 }
+
+func TestFinishedSinceAndRunningByWorker(t *testing.T) {
+	q, c := newQueue(t)
+	ctx := context.Background()
+	q.Add(ctx, NewJob{URL: "https://a.pl/1", Engine: "static"}, NewJob{URL: "https://b.pl/1", Engine: "static"},
+		NewJob{URL: "https://c.pl/1", Engine: "static"})
+	r := req
+	r.Max = 2
+	w1, _ := q.Lease(ctx, r)
+	r.Worker, r.Max = "w2", 1
+	w2, _ := q.Lease(ctx, r)
+	if len(w1) != 2 || len(w2) != 1 {
+		t.Fatalf("leased %d+%d", len(w1), len(w2))
+	}
+	running, err := q.RunningByWorker(ctx)
+	if err != nil || len(running) != 2 || running["w1"] != 2 || running["w2"] != 1 {
+		t.Fatalf("running %v %v", running, err)
+	}
+
+	start := c.now()
+	c.add(time.Minute)
+	q.Finish(ctx, w1[0].ID, Outcome{})
+	q.Finish(ctx, w1[1].ID, Outcome{Error: "boom"})
+	if done, failed, err := q.FinishedSince(ctx, start); err != nil || done != 1 || failed != 1 {
+		t.Fatalf("finished %d done, %d failed, %v", done, failed, err)
+	}
+	if done, failed, _ := q.FinishedSince(ctx, c.now().Add(time.Second)); done+failed != 0 {
+		t.Fatal("finished in the future")
+	}
+	if running, _ := q.RunningByWorker(ctx); len(running) != 1 || running["w2"] != 1 {
+		t.Fatalf("running after finish %v", running)
+	}
+	c.add(time.Hour) // w2's lease expired
+	if running, _ := q.RunningByWorker(ctx); len(running) != 0 {
+		t.Fatalf("expired lease counted %v", running)
+	}
+}

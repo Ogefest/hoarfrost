@@ -193,7 +193,15 @@ func TestSetupLoginCSRFAndPages(t *testing.T) {
 			t.Fatalf("%s: missing CSP", p)
 		}
 	}
-	_, body := b.get(t, "/archive?q=transport")
+	_, body := b.get(t, "/")
+	if !strings.Contains(body, `hx-get="/dashboard/live"`) || !strings.Contains(body, "Recently active sources") || strings.Contains(body, "Nothing captured in the last 24 hours") {
+		t.Fatalf("dashboard lacks live activity:\n%s", body)
+	}
+	resp, body = b.get(t, "/dashboard/live")
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "</html>") || !strings.Contains(body, `id="live"`) || !strings.Contains(body, "Captured, last hour") {
+		t.Fatalf("live fragment: %d\n%s", resp.StatusCode, body)
+	}
+	_, body = b.get(t, "/archive?q=transport")
 	m := regexp.MustCompile(`href="/page/(\d+)"`).FindStringSubmatch(body)
 	if m == nil {
 		t.Fatalf("search result missing:\n%s", body)

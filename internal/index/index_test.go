@@ -658,3 +658,46 @@ func TestDedupCacheBounded(t *testing.T) {
 		t.Fatal("first record found must be kept")
 	}
 }
+
+func TestCapturedSeriesAndRecentSources(t *testing.T) {
+	db := openDB(t)
+	fixture(t, db)
+	ctx := context.Background()
+
+	hours, err := db.CapturedSeries(ctx, t0.Add(48*time.Hour+30*time.Minute), time.Hour, 49)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hours) != 49 || !hours[0].At.Equal(t0) || !hours[48].At.Equal(t0.Add(48*time.Hour)) {
+		t.Fatalf("buckets %v .. %v", hours[0], hours[len(hours)-1])
+	}
+	var total int64
+	for i, h := range hours {
+		total += h.Pages
+		want := int64(0)
+		if i == 0 || i == 24 || i == 48 {
+			want = 1
+		}
+		if h.Pages != want {
+			t.Fatalf("bucket %d (%s) = %d", i, h.At, h.Pages)
+		}
+	}
+	if total != 3 {
+		t.Fatalf("total %d", total)
+	}
+	if late, _ := db.CapturedSeries(ctx, t0.Add(100*time.Hour), time.Minute, 60); len(late) != 60 || late[0].Pages+late[59].Pages != 0 {
+		t.Fatalf("empty window %v", late)
+	}
+
+	recent, err := db.RecentSources(ctx, t0.Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 2 || recent[0].Source != "inny" || recent[1].Source != "serwis" || recent[1].Pages != 1 ||
+		!recent[0].Last.Equal(t0.Add(48*time.Hour)) {
+		t.Fatalf("recent %+v", recent)
+	}
+	if top, _ := db.RecentSources(ctx, t0.Add(time.Hour), 1); len(top) != 1 || top[0].Source != "inny" {
+		t.Fatalf("limit %+v", top)
+	}
+}
