@@ -53,3 +53,35 @@ func TestHTMLKeepsParagraphs(t *testing.T) {
 		t.Errorf("text:\n%s\nwant to contain\n%s", res.Text, want)
 	}
 }
+
+// A utility class on the article container that merely mentions "teaser"
+// made trafilatura discard the whole article and return the footer.
+func TestHTMLIgnoresUtilityClasses(t *testing.T) {
+	para := func(s string) string {
+		return `<div class="wp-content-part contents"><div class="wp-content-text-raw x-tts"><p>` +
+			strings.Repeat(s+" ", 4) + `</p></div></div>`
+	}
+	src := `<html><head><title>T</title></head><body><main><article>
+<div class="article-body-grid"><div class="mb-4 flex flex-col [&_.wp-content-part-teaser]:mb-0 md:text-xl">` +
+		para("Do zbrodni doszło w środę w domu jednorodzinnym przy ul. Sublańskiej.") +
+		para("Policjanci szybko ustalili miejsce pobytu podejrzanego i go zatrzymali.") +
+		para("Postępowanie nadzoruje prokuratura rejonowa, śledczy wyjaśniają przebieg.") +
+		`</div></div></article></main>
+<footer><ul><li>Regulamin</li><li>Reklama</li><li>O nas</li></ul><p>` +
+		strings.Repeat("Pobieranie, zwielokrotnianie i przechowywanie treści wymaga zgody wydawcy. ", 8) +
+		`</p></footer></body></html>`
+	res := HTML([]byte(src), "text/html", "https://example.com/a")
+	if !strings.Contains(res.Text, "Sublańskiej") || strings.Contains(res.Text, "Regulamin") {
+		t.Errorf("article lost to the footer:\n%s", res.Text)
+	}
+}
+
+func TestDropUtilityClasses(t *testing.T) {
+	doc, _ := html.Parse(strings.NewReader(`<div class="article md:pb-4 w-[304px] [&_.teaser]:mb-0 lead"></div>`))
+	dropUtilityClasses(doc)
+	var b strings.Builder
+	html.Render(&b, doc)
+	if !strings.Contains(b.String(), `class="article lead"`) {
+		t.Errorf("got %s", b.String())
+	}
+}

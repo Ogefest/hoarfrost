@@ -20,6 +20,7 @@ import (
 	"github.com/markusmobius/go-trafilatura"
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Result is the extracted content of a document.
@@ -83,7 +84,15 @@ func HTML(body []byte, contentType, pageURL string) Result {
 		opts.OriginalURL = u
 	}
 	res := Result{Structured: StructuredData([]byte(src), "text/html; charset=utf-8", pageURL)}
-	if out, err := trafilatura.Extract(strings.NewReader(src), opts); err == nil && out != nil {
+	var out *trafilatura.ExtractResult
+	// Composed characters and no soft hyphens, as trafilatura's own parser
+	// would give.
+	clean := norm.NFC.String(strings.ReplaceAll(src, "\u00ad", ""))
+	if doc, err := html.Parse(strings.NewReader(clean)); err == nil {
+		dropUtilityClasses(doc)
+		out, _ = trafilatura.ExtractDocument(doc, opts)
+	}
+	if out != nil {
 		res.Title = strings.TrimSpace(out.Metadata.Title)
 		if out.ContentNode != nil {
 			res.Text = markdownText(out.ContentNode)
@@ -106,6 +115,32 @@ func HTML(body []byte, contentType, pageURL string) Result {
 		}
 	}
 	return res
+}
+
+// dropUtilityClasses removes class names with variant prefixes or arbitrary
+// values ("md:pb-4", "[&_.wp-content-part-teaser]:mb-0", "w-[304px]"), as
+// utility CSS frameworks such as Tailwind generate them. They describe
+// styling, not content, yet trafilatura discards any element whose class
+// merely contains words like "teaser", "share" or "comment", so a single such
+// name on the article container used to throw away the whole article.
+func dropUtilityClasses(n *html.Node) {
+	if n.Type == html.ElementNode {
+		for i, a := range n.Attr {
+			if a.Key != "class" || !strings.ContainsAny(a.Val, "[:") {
+				continue
+			}
+			kept := strings.Fields(a.Val)[:0]
+			for _, c := range strings.Fields(a.Val) {
+				if !strings.ContainsAny(c, "[:") {
+					kept = append(kept, c)
+				}
+			}
+			n.Attr[i].Val = strings.Join(kept, " ")
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		dropUtilityClasses(c)
+	}
 }
 
 // plainHTML returns the <title> and all visible text of a document.
