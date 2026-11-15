@@ -98,32 +98,39 @@ through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
 
 ## Quick start
 
-Requirements: Go 1.26 or newer and a PostgreSQL database (CI tests on
-PostgreSQL 17).
+With Docker Compose, from the latest release (details, upgrades and backups
+in [docs/install.md](docs/install.md)):
 
 ```sh
-go build -o hoarfrost ./cmd/hoarfrost      # or: make build
-cp .env.example .env                       # set HOARFROST_DATABASE and HOARFROST_SECRET (32+ random chars)
-./hoarfrost serve
+mkdir hoarfrost && cd hoarfrost
+curl -LO https://github.com/Ogefest/hoarfrost/releases/latest/download/compose.yaml
+curl -L -o .env https://github.com/Ogefest/hoarfrost/releases/latest/download/install.env
+# put random secrets into .env:
+sed -i "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=$(openssl rand -hex 24)/; s/^HOARFROST_SECRET=$/HOARFROST_SECRET=$(openssl rand -hex 32)/; s/^HOARFROST_WORKER_TOKEN=$/HOARFROST_WORKER_TOKEN=$(openssl rand -hex 24)/" .env
+docker compose up -d
 ```
 
 Open <http://localhost:8080>, create the administrator and add sources on
 the Sources page (or through `/api/sources`). The instance starts without
 any; sources, their schedule and poll state are kept in the database.
-Optional external tools: Chromium (`chrome` engine), `pdftotext` (PDF text),
-`tesseract` + `pdftoppm` (OCR).
+
+Release binaries for Linux and macOS need a PostgreSQL database; Chromium
+(`chrome` engine), `pdftotext` (PDF text) and `tesseract` + `pdftoppm` (OCR)
+are optional. To build from source (Go version in `go.mod`):
+
+```sh
+make build
+cp .env.example .env                       # set HOARFROST_DATABASE and HOARFROST_SECRET (32+ random chars)
+./hoarfrost serve
+```
 
 One `hoarfrost serve` is a complete instance: it captures pages with its
 embedded worker. When it is not fast enough, add `hoarfrost worker` processes
 on the same or other machines; see [Running](docs/operations.md#running).
 
-With Docker, a complete environment with PostgreSQL, a test news site, a
-coordinator and an extra worker; the archive is written to `./archive` on the
-host:
-
-```sh
-docker compose up --build
-```
+For development, `docker compose up --build` in the repository starts
+PostgreSQL, a test news site, a coordinator and an extra worker, writing the
+archive to `./archive`.
 
 ## Commands
 

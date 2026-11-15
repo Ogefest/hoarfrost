@@ -14,11 +14,21 @@ Thanks for helping! A few rules keep the archive trustworthy for decades:
 
 ## Workflow
 
+Work on a branch off an up-to-date `main` and open a pull request. Label it
+(`enhancement`, `bug`, `documentation`, plus `migration` or `breaking` when
+they apply): labels group the release notes. Merged changes go out with the
+next release; [docs/releasing.md](docs/releasing.md) describes the flow and
+how releases are cut.
+
 ```sh
 make test race lint
 make fuzz        # when touching parsers
 make e2e         # end-to-end; install tools with `make conformance-tools`
 ```
+
+`scripts/smoke-install.sh IMAGE` installs an image the way users do
+(`deploy/compose.yaml`) and checks that it captures a page; CI runs it on
+every pull request.
 
 Golden files of the static engine are regenerated with
 `go test ./internal/engine/static -update`; review the diff.

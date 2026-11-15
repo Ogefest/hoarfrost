@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Installation guide
+    url: https://github.com/Ogefest/hoarfrost/blob/main/docs/install.md
+    about: Installing, upgrading and backing up an instance.

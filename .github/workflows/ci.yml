@@ -3,6 +3,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call: # the release workflow runs the whole suite before publishing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -93,9 +101,21 @@ jobs:
           HOARFROST_TEST_S3: s3://hoarfrost-ci/run?endpoint=http://127.0.0.1:18333&region=us-east-1&path_style=true
         run: go test -count=1 -v -run 'TestS3RealContract|TestEndToEnd' ./internal/storage ./e2e
 
-  docker:
+  # Builds the image and installs it the way docs/install.md describes.
+  install:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # context: . builds the checked-out tree; without it buildx fetches the
+      # pull request's merge ref, which is gone once the PR is merged.
       - uses: docker/build-push-action@v6
-        with: { push: false, tags: "hoarfrost:ci" }
+        with:
+          context: .
+          load: true
+          tags: hoarfrost:ci
+          build-args: VERSION=ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Install from deploy/compose.yaml and capture a page
+        run: scripts/smoke-install.sh hoarfrost:ci ci
