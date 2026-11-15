@@ -65,7 +65,7 @@ type Options struct {
 	// interrupted.
 	SealHeartbeat time.Duration
 	SealStale     time.Duration
-	// OverviewTTL is how long dashboard totals are cached (default 5m).
+	// OverviewTTL is how long dashboard totals are cached (default 2m).
 	OverviewTTL time.Duration
 }
 
@@ -138,7 +138,7 @@ func New(o Options) (*Coordinator, error) {
 		o.SealStale = 3 * time.Minute
 	}
 	if o.OverviewTTL == 0 {
-		o.OverviewTTL = 5 * time.Minute
+		o.OverviewTTL = 2 * time.Minute
 	}
 	c := &Coordinator{
 		lib: o.Library, idx: o.Library.Index, queue: o.Queue, fetcher: o.Fetcher,

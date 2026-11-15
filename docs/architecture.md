@@ -392,8 +392,8 @@ requests.
 
 | Screen | Contents |
 |---|---|
-| Dashboard | archive size, captures per day, deduplication savings, errors, fallback rates, queue, workers and their leases, state of the latest week |
-| Sources | feeds, sitemaps and URL lists with engine, fallback, interval and storage; test, poll now, enable/disable; defaults and block lists |
+| Dashboard | archive size, captures per day, deduplication savings, queue, state of the latest week (cached for two minutes); live, refreshed every 30 s: captures per minute and per hour, jobs done and failed in the last hour, workers with their running captures, recently active sources, recent failures |
+| Sources | feeds, sitemaps and URL lists with engine, fallback, interval and storage; pages with the fallback share and short pages, queued jobs; test, poll now, enable/disable; defaults and block lists |
 | Queue | waiting, running and failed jobs with the reason; retry; add a URL now |
 | Archive | full-text search with filters (source, storage, domain, kind, dates), timeline of captures of a URL |
 | Page | quick preview (works for the open week too), full replay, extracted text and structured data, HTML export, raw WARC record |

@@ -752,3 +752,30 @@ func (q *Queue) Purge(ctx context.Context, age time.Duration) (int64, error) {
 func (j Job) String() string {
 	return fmt.Sprintf("job %d %s (%s/%s)", j.ID, j.URL, j.Source, j.Engine)
 }
+
+// FinishedSince counts the jobs that ended since t, by outcome.
+func (q *Queue) FinishedSince(ctx context.Context, t time.Time) (done, failed int, err error) {
+	err = q.db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE state = 'done'), count(*) FILTER (WHERE state = 'failed')
+		FROM jobs WHERE finished >= $1`, t.UTC()).Scan(&done, &failed)
+	return done, failed, err
+}
+
+// RunningByWorker counts the jobs every worker holds an unexpired lease on.
+func (q *Queue) RunningByWorker(ctx context.Context) (map[string]int, error) {
+	rows, err := q.db.QueryContext(ctx, `SELECT coalesce(worker,''), count(*) FROM jobs
+		WHERE state = 'leased' AND lease_until >= $1 GROUP BY 1`, q.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var w string
+		var n int
+		if err := rows.Scan(&w, &n); err != nil {
+			return nil, err
+		}
+		out[w] = n
+	}
+	return out, rows.Err()
+}

@@ -1,19 +1,21 @@
 {{define "content"}}
 {{$d := .Data}}
 <h1>Dashboard</h1>
-<p class="muted">Totals as of {{datetime $d.At}}, refreshed every few minutes.</p>
 <div class="tiles">
   <div class="tile"><span class="label">Archive size</span><span class="value">{{bytes $d.Stats.Bytes}}</span></div>
   <div class="tile"><span class="label">Pages</span><span class="value">{{$d.Stats.Pages}}</span></div>
   <div class="tile"><span class="label">Saved by deduplication</span><span class="value">{{bytes $d.Stats.DedupSaved}}</span><span class="sub">{{$d.Stats.Revisits}} revisits · {{pct $d.Ratio}}</span></div>
-  <div class="tile"><span class="label">Queue</span><span class="value">{{index $d.Queue "queued"}}</span><span class="sub">{{index $d.Queue "leased"}} running · {{index $d.Queue "failed"}} failed</span></div>
+  <div class="tile"><span class="label">Queue</span><span class="value">{{index $d.Queue "queued"}}</span><span class="sub">{{index $d.Queue "failed"}} failed in total</span></div>
   <div class="tile"><span class="label">Last sealed week</span>
     {{with $d.Stats.LastEpoch.Epoch}}<span class="value">{{.}}</span><span class="sub state-{{$d.Stats.LastEpoch.State}}">{{$d.Stats.LastEpoch.State}}</span>{{else}}<span class="value">—</span>{{end}}
   </div>
 </div>
+<p class="muted small">Totals above and the charts at the bottom as of {{datetime $d.At}} (computed every two minutes); the rest is live.</p>
+
+{{template "live" .}}
 
 <div class="grid2">
-<section class="card">
+<section class="card chart-card">
   <h2>Captures per day (30 days)</h2>
   {{if $d.Stats.PerDay}}
   <div class="bars">
@@ -31,28 +33,57 @@
   </table>
 </section>
 </div>
+{{range $ep, $err := $d.SealErrors}}<div class="flash err">Sealing {{$ep}} failed: {{$err}}</div>{{end}}
+{{end}}
+
+{{define "live"}}
+{{$l := .Data.Live}}
+<div id="live" hx-get="/dashboard/live" hx-trigger="every 30s" hx-swap="outerHTML">
+<div class="tiles">
+  <div class="tile"><span class="label">Captured, last hour</span><span class="value">{{$l.LastHour}}</span><span class="sub">{{perMinute $l.LastHour}} per minute</span></div>
+  <div class="tile"><span class="label">Jobs, last hour</span><span class="value">{{$l.Done}}</span><span class="sub {{if $l.Failed}}warn{{end}}">done · {{$l.Failed}} failed</span></div>
+  <div class="tile"><span class="label">Workers</span><span class="value">{{$l.Online}}</span><span class="sub">online · {{$l.Running}} capturing{{if $l.Slots}} · embedded {{len $l.Active}}/{{$l.Slots}} slots{{end}}</span></div>
+</div>
 
 <div class="grid2">
-<section class="card">
-  <h2>Sources</h2>
-  <table class="compact">
-    <tr><th>Source</th><th class="num">Pages</th><th class="num">Fallback</th><th class="num">Short text</th><th>Last</th></tr>
-    {{range $d.Stats.Sources}}
-    <tr><td>{{.Source}}</td><td class="num">{{.Pages}}</td><td class="num {{if gt .FallbackRatio 0.3}}warn{{end}}">{{pct .FallbackRatio}}</td><td class="num">{{.Short}}</td><td>{{ago .Last}}</td></tr>
-    {{end}}
-  </table>
-  <p class="muted">A high fallback share suggests switching the source to the chrome engine.</p>
+<section class="card chart-card">
+  <h2>Captures, last 60 minutes</h2>
+  <div class="bars dense">
+    {{range $l.Minutes}}<div class="bar" title="{{clock .At}}: {{.Pages}}"><span style="height: {{bar .Pages $l.MaxMinute}}%"></span></div>{{end}}
+  </div>
+  <div class="axis"><span>−60 min</span><span>now</span></div>
+  <h2>Captures, last 24 hours</h2>
+  <div class="bars">
+    {{range $l.Hours}}<div class="bar" title="{{clock .At}}: {{.Pages}}"><span style="height: {{bar .Pages $l.MaxHour}}%"></span></div>{{end}}
+  </div>
+  <div class="axis"><span>−24 h</span><span>now</span></div>
 </section>
 <section class="card">
   <h2>Workers</h2>
   <table class="compact">
-    {{range $d.Workers}}<tr><td>{{.Name}}</td><td>{{ago .LastSeen}}</td><td class="num">{{.Leases}} leases</td></tr>{{else}}<tr><td class="muted">No worker seen in the last hour.</td></tr>{{end}}
+    <tr><th>Worker</th><th class="num">Capturing</th><th>Last seen</th><th class="num">Leases</th></tr>
+    {{range $l.Workers}}<tr><td><span class="state{{if .Online}} state-ok{{end}}">{{if .Online}}online{{else}}silent{{end}}</span> {{.Name}}</td>
+    <td class="num">{{.Running}}</td><td>{{ago .LastSeen}}</td><td class="num">{{.Leases}}</td></tr>
+    {{else}}<tr><td colspan="4" class="muted">No worker seen in the last hour.</td></tr>{{end}}
   </table>
-  {{if $d.Active}}<h3>Capturing now</h3><ul class="plain">{{range $d.Active}}<li class="url">{{.}}</li>{{end}}</ul>{{end}}
-  {{if $d.Failed}}<h3>Recent failures</h3>
-  <ul class="plain">{{range $d.Failed}}<li><span class="url">{{.URL}}</span><br><span class="muted">{{.LastError}}</span></li>{{end}}</ul>
+  {{if $l.Active}}<h3>Capturing now</h3><ul class="plain">{{range $l.Active}}<li class="url">{{.}}</li>{{end}}</ul>{{end}}
+  {{if $l.RecentFails}}<h3>Recent failures</h3>
+  <ul class="plain">{{range $l.RecentFails}}<li><span class="url">{{.URL}}</span><br><span class="muted">{{ago .Finished}} · {{.LastError}}</span></li>{{end}}</ul>
   <a href="/queue?state=failed">All failures →</a>{{end}}
-  {{range $ep, $err := $d.SealErrors}}<div class="flash err">Sealing {{$ep}} failed: {{$err}}</div>{{end}}
 </section>
+</div>
+
+<section class="card">
+  <h2>Recently active sources</h2>
+  <table class="compact">
+    <tr><th>Source</th><th class="num">Captured, 24 h</th><th>Last capture</th><th class="num">Queued</th><th>Last poll</th></tr>
+    {{range $l.Sources}}
+    <tr><td><a href="{{query "/archive" "source" .Source}}">{{.Source}}</a></td><td class="num">{{.Pages}}</td><td>{{ago .Last}}</td><td class="num">{{.Queued}}</td>
+    <td>{{if .Poll.LastPoll.IsZero}}<span class="muted">—</span>{{else}}{{ago .Poll.LastPoll}} · {{.Poll.New}} new{{if .Poll.Error}} · <span class="warn">error</span>{{end}}{{end}}</td></tr>
+    {{else}}<tr><td colspan="5" class="muted">Nothing captured in the last 24 hours.</td></tr>{{end}}
+  </table>
+  {{if can $.User.Role "editor"}}<a href="/sources">All sources →</a>{{end}}
+</section>
+<p class="muted small">Updated {{clock $l.At}}, refreshes every 30 seconds.</p>
 </div>
 {{end}}

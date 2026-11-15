@@ -39,12 +39,13 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	var wg sync.WaitGroup
 	var active func() []string
+	var slots int
 	if env.EmbeddedWorker && env.Workers > 0 {
 		reg, closeEngines := engines(env, *engineNames, log)
 		defer closeEngines()
 		w := &worker.Worker{Name: env.WorkerName + "/embedded", Coord: in.coord, Storages: in.stores, Engines: reg,
 			SpoolDir: filepath.Join(env.DataDir, "spool"), Slots: env.Workers, Log: log}
-		active = w.Active
+		active, slots = w.Active, env.Workers
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = w.Run(ctx) }()
 	}
@@ -53,7 +54,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	srv, err := web.New(&web.Server{
 		Coord: in.coord, Auth: in.auth, Log: log, SecureCookie: !env.InsecureCookie, WorkerToken: env.WorkerToken,
-		Active: active, Storage: in.descriptions(),
+		Active: active, Slots: slots, Storage: in.descriptions(),
 	})
 	if err != nil {
 		return err

@@ -516,3 +516,67 @@ func (d *DB) Volume(ctx context.Context, ep epoch.ID) ([]VolumeRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// TimeCount is the number of pages captured in one time bucket.
+type TimeCount struct {
+	At    time.Time // start of the bucket
+	Pages int64
+}
+
+// CapturedSeries counts pages captured in the n buckets of length step
+// that end with the one holding end, oldest first, empty buckets included.
+// It reads the pages_captured index only, so it is cheap for recent hours.
+func (d *DB) CapturedSeries(ctx context.Context, end time.Time, step time.Duration, n int) ([]TimeCount, error) {
+	if n <= 0 || step <= 0 {
+		return nil, nil
+	}
+	start := end.UTC().Truncate(step).Add(-time.Duration(n-1) * step)
+	out := make([]TimeCount, n)
+	for i := range out {
+		out[i].At = start.Add(time.Duration(i) * step)
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT floor(extract(epoch FROM captured - $1) / $2)::bigint AS b, count(*) FROM pages
+		WHERE captured >= $1 GROUP BY b`, start, step.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("index: captured series: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b, c int64
+		if err := rows.Scan(&b, &c); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < int64(n) {
+			out[b].Pages = c
+		}
+	}
+	return out, rows.Err()
+}
+
+// SourceActivity is what one source captured recently.
+type SourceActivity struct {
+	Source string
+	Pages  int64
+	Last   time.Time
+}
+
+// RecentSources returns the sources that captured pages since t, the one
+// with the latest capture first, at most limit of them.
+func (d *DB) RecentSources(ctx context.Context, since time.Time, limit int) ([]SourceActivity, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT coalesce(source,''), count(*), max(captured) FROM pages
+		WHERE captured >= $1 GROUP BY 1 ORDER BY 3 DESC, 1 LIMIT $2`, utc(since), limit)
+	if err != nil {
+		return nil, fmt.Errorf("index: recent sources: %w", err)
+	}
+	defer rows.Close()
+	var out []SourceActivity
+	for rows.Next() {
+		var a SourceActivity
+		if err := rows.Scan(&a.Source, &a.Pages, &a.Last); err != nil {
+			return nil, err
+		}
+		a.Last = a.Last.UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
