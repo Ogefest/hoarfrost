@@ -53,10 +53,10 @@ listed in the notes. A patch bump (`0.3.1`) contains fixes only.
 
    Check that every merged PR has a label.
 
-2. Tag `main` with an annotated tag. The tag message becomes the **Upgrade
-   notes** section of the release. Write it whenever an upgrade needs more
+2. Tag `main` with an annotated tag. The body of the tag message (after the
+   first line) becomes the **Upgrade notes** section of the release. Write it whenever an upgrade needs more
    than `docker compose pull && docker compose up -d`: a long migration, an
-   index rebuild, a changed setting. Leave it as just the version otherwise.
+   index rebuild, a changed setting. Otherwise give only the first line.
 
    ```sh
    git switch main && git pull
@@ -86,6 +86,6 @@ or `:0.2`.
 
 ## The container image
 
-Images live in the GitHub Container Registry, linked to this repository. A
-newly created package is private. Make it public once, under *Package
-settings → Change visibility*.
+Images live in the GitHub Container Registry as
+`ghcr.io/ogefest/hoarfrost`, linked to this public repository, so anyone
+can pull them without logging in.
