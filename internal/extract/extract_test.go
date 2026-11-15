@@ -80,7 +80,7 @@ func TestDOCXAndODT(t *testing.T) {
 	}
 	docx := mk("word/document.xml", `<w:document xmlns:w="x"><w:body><w:p><w:r><w:t>Raport roczny</w:t></w:r></w:p><w:p><w:r><w:t>Druga część</w:t></w:r></w:p></w:body></w:document>`)
 	res, err := Document(context.Background(), docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "")
-	if err != nil || res.Text != "Raport roczny\nDruga część" {
+	if err != nil || res.Text != "Raport roczny\n\nDruga część" {
 		t.Fatalf("docx %+v %v", res, err)
 	}
 	odt := mk("content.xml", `<office:document-content xmlns:office="o" xmlns:text="t"><text:h>Tytuł</text:h><text:p>Akapit</text:p></office:document-content>`)

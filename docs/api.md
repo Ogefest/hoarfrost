@@ -74,8 +74,11 @@ A page:
 }
 ```
 
-`text` (the extracted text) is included only by `/api/pages/{id}`. Optional
-fields are left out when unknown.
+`text` (the extracted text) is included only by `/api/pages/{id}`. For HTML
+it is lightweight Markdown: paragraphs separated by blank lines, `#` headings,
+`-`/`1.` list items, `>` quotes, fenced code blocks and `|`-separated table
+rows. Captures made with v0.1.0 or earlier keep the single-line text they
+were stored with. Optional fields are left out when unknown.
 
 Structured data comes from the page as captured:
 

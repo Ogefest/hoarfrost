@@ -85,7 +85,12 @@ func HTML(body []byte, contentType, pageURL string) Result {
 	res := Result{Structured: StructuredData([]byte(src), "text/html; charset=utf-8", pageURL)}
 	if out, err := trafilatura.Extract(strings.NewReader(src), opts); err == nil && out != nil {
 		res.Title = strings.TrimSpace(out.Metadata.Title)
-		res.Text = normalizeSpace(out.ContentText)
+		if out.ContentNode != nil {
+			res.Text = markdownText(out.ContentNode)
+		}
+		if res.Text == "" {
+			res.Text = normalizeSpace(out.ContentText)
+		}
 		res.Language = out.Metadata.Language
 		if !out.Metadata.Date.IsZero() && out.Metadata.Date.Year() > 1990 {
 			res.Published = out.Metadata.Date.Format(time.DateOnly)
@@ -109,41 +114,24 @@ func plainHTML(src string) (title, text string) {
 	if err != nil {
 		return "", ""
 	}
-	var b strings.Builder
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			switch n.Data {
-			case "script", "style", "noscript", "template", "svg":
-				return
-			case "title":
-				if title == "" && n.FirstChild != nil {
-					title = strings.TrimSpace(n.FirstChild.Data)
-				}
-				return
-			}
+	var findTitle func(*html.Node) bool
+	findTitle = func(n *html.Node) bool {
+		if n.Type == html.ElementNode && (n.Data == "svg" || n.Data == "template") {
+			return false
 		}
-		if n.Type == html.TextNode {
-			b.WriteString(n.Data)
-			b.WriteByte(' ')
+		if n.Type == html.ElementNode && n.Data == "title" && n.FirstChild != nil {
+			title = strings.TrimSpace(n.FirstChild.Data)
+			return title != ""
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			if findTitle(c) {
+				return true
+			}
 		}
-		if n.Type == html.ElementNode && isBlock(n.Data) {
-			b.WriteByte('\n')
-		}
+		return false
 	}
-	walk(doc)
-	return title, normalizeSpace(b.String())
-}
-
-func isBlock(tag string) bool {
-	switch tag {
-	case "p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "article", "section", "blockquote":
-		return true
-	}
-	return false
+	findTitle(doc)
+	return title, markdownText(doc)
 }
 
 var (
@@ -216,7 +204,7 @@ func zipXMLText(body []byte, member string, paragraphTags ...string) (Result, er
 		case xml.EndElement:
 			for _, p := range paragraphTags {
 				if t.Name.Local == p {
-					b.WriteByte('\n')
+					b.WriteString("\n\n")
 				}
 			}
 		}
