@@ -133,6 +133,8 @@ func (s *Server) Handler() http.Handler {
 	editor("POST /queue/{id}/retry", s.queueRetry)
 	editor("POST /queue/retry-failed", s.queueRetryFailed)
 	editor("POST /page/{id}/ocr", s.ocr)
+	editor("GET /save", s.savePage)
+	editor("POST /save", s.save)
 
 	admin("GET /system", s.systemPage)
 	admin("POST /system/epochs/{storage}/{epoch}/verify", s.verifyEpoch)

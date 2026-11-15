@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"html/template"
 	"net/http"
 	"strconv"
 
@@ -99,8 +100,19 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 }
 
 type accountData struct {
-	Tokens   []auth.Token
-	NewToken string
+	Tokens      []auth.Token
+	NewToken    string
+	Bookmarklet template.URL
+}
+
+func (s *Server) account(r *http.Request, d accountData) accountData {
+	u := userFrom(r)
+	if auth.Can(u.Role, auth.RoleEditor) {
+		if key, err := s.Auth.BookmarkletKey(r.Context(), u.ID); err == nil {
+			d.Bookmarklet = bookmarklet(r, key)
+		}
+	}
+	return d
 }
 
 func (s *Server) accountPage(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +121,7 @@ func (s *Server) accountPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, r, "account.html", "Account", accountData{Tokens: toks})
+	s.render(w, r, "account.html", "Account", s.account(r, accountData{Tokens: toks}))
 }
 
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +135,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	toks, _ := s.Auth.Tokens(r.Context(), userFrom(r).ID)
-	s.render(w, r, "account.html", "Account", accountData{Tokens: toks, NewToken: tok})
+	s.render(w, r, "account.html", "Account", s.account(r, accountData{Tokens: toks, NewToken: tok}))
 }
 
 func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request) {

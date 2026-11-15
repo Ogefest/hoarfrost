@@ -17,6 +17,14 @@
     <button class="primary">Create token</button>
   </form>
 </section>
+{{with $d.Bookmarklet}}
+<section class="card">
+  <h2>Bookmarklet</h2>
+  <p class="muted">Drag this button to the bookmarks bar. Clicking it on any web page queues that page for a regular capture.</p>
+  <p><a class="button primary" href="{{.}}" data-bookmarklet>{{icon "archive"}} Save to hoarfrost</a></p>
+  <p class="muted">It carries a personal key, so it queues pages without asking. Changing your password disables it; drag it again afterwards.</p>
+</section>
+{{end}}
 <section class="card">
   <h2>Change password</h2>
   <form method="post" action="/account/password">

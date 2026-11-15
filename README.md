@@ -45,8 +45,9 @@ through a read-only [HTTP API](docs/api.md) ([OpenAPI](docs/openapi.yaml)).
 - **One binary**, two roles: `hoarfrost serve` (coordinator, web UI, API,
   embedded worker) and `hoarfrost worker` (additional capture nodes).
 - **Sources**: RSS/Atom feeds, sitemaps (including news sitemaps and
-  indexes), static URL lists, URLs added through the API, and pages saved in
-  a browser (MHTML, SingleFile HTML, WACZ/WARC). Sources are added and edited
+  indexes), static URL lists, URLs added through the API or the
+  **bookmarklet** (one click queues the page you are reading), and pages
+  saved in a browser (MHTML, SingleFile HTML, WACZ/WARC). Sources are added and edited
   in the web UI (or the API), each with its own poll interval, engine and
   storage; the last poll and the next one are shown per source.
 - **Capture engines** sharing one WARC recorder that keeps raw HTTP bytes:
