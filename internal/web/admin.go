@@ -144,10 +144,19 @@ type systemData struct {
 	// Seal attempts: failing weeks, attempts in progress by
 	// "storage/epoch", the latest attempts and the retry policy.
 	SealFailures []sealFailure
-	Sealing      map[string]sealrun.Run
-	SealRuns     []sealrun.Run
+	Sealing      map[string]*sealrun.Run
+	SealRuns     []sealRunRow
 	SealAttempts int
 	SealRetry    time.Duration
+}
+
+// sealRunRow is a seal attempt in the list of attempts. Resolved marks an
+// attempt that did not succeed but no longer matters: a later attempt
+// sealed the week, or the week is sealed. Retrying marks one whose week is
+// being sealed again right now.
+type sealRunRow struct {
+	sealrun.Run
+	Resolved, Retrying bool
 }
 
 // sealFailure is a week whose latest seal attempt failed.
@@ -184,13 +193,29 @@ func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
 	d.Users, _ = s.Auth.Users(ctx)
 	d.Task, d.TaskState, d.TaskLast = s.tasks.snapshot()
 	d.SealAttempts, d.SealRetry = s.Coord.SealPolicy()
-	d.Sealing = map[string]sealrun.Run{}
+	d.Sealing = map[string]*sealrun.Run{}
+	sealed := map[string]bool{}
+	for _, e := range d.Epochs {
+		if e.State == index.StateSealed || e.State == index.StateVerified {
+			sealed[e.Storage+"/"+string(e.Epoch)] = true
+		}
+	}
 	if runs, err := s.Coord.SealRuns(ctx, 20); err == nil {
-		d.SealRuns = runs
+		// Newest first: what came after an attempt is already known.
+		okLater := map[string]bool{}
 		for _, run := range runs {
-			if run.Running() {
-				d.Sealing[run.Storage+"/"+string(run.Epoch)] = run
+			key := run.Storage + "/" + string(run.Epoch)
+			row := sealRunRow{Run: run}
+			switch {
+			case run.Running():
+				d.Sealing[key] = &row.Run
+			case run.Outcome == sealrun.OutcomeOK:
+				okLater[key] = true
+			default:
+				row.Resolved = okLater[key] || sealed[key]
+				row.Retrying = !row.Resolved && d.Sealing[key] != nil
 			}
+			d.SealRuns = append(d.SealRuns, row)
 		}
 	}
 	if failures, err := s.Coord.SealFailures(ctx); err == nil {

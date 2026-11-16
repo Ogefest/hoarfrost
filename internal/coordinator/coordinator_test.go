@@ -850,6 +850,28 @@ func TestInterruptedSealIsFlaggedAndRetried(t *testing.T) {
 	}
 }
 
+// TestRetriedSealIsNoError: while a failed week is being sealed again, it
+// is not reported as failed; it is again if that attempt fails too.
+func TestRetriedSealIsNoError(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	ep := epoch.ID("2026-W40")
+	e.idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateFailed, Error: "x"})
+	other := sealrun.New(e.db)
+	other.Record(ctx, "default", ep, "vm", sealrun.OutcomeFailed, "context canceled")
+	if errs := e.coord.SealErrors(ctx); len(errs) != 1 {
+		t.Fatalf("errors %v", errs)
+	}
+	id, _ := other.Start(ctx, "default", ep, "vm", time.Time{})
+	if errs := e.coord.SealErrors(ctx); len(errs) != 0 {
+		t.Fatalf("a week being retried reported as failed: %v", errs)
+	}
+	other.Finish(ctx, id, errors.New("again"))
+	if errs := e.coord.SealErrors(ctx); !strings.Contains(errs["default/"+string(ep)], "again (attempt 2 of 3)") {
+		t.Fatalf("errors %v", errs)
+	}
+}
+
 // TestStaleSealRunIsInterrupted: a recorded seal whose heartbeat stopped
 // ends as interrupted with the phase it reached, and failed seals are
 // retried only up to the attempt limit.

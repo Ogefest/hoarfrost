@@ -9,8 +9,13 @@
 <h1>System</h1>
 <nav class="tabs"><a href="/system" class="active">Overview</a><a href="/system/keys">API keys</a></nav>
 {{range $d.SealFailures}}
-<div class="flash err"><b>Sealing of {{.Key}} failed</b> ({{.Last.Outcome}}, {{datetime .Last.Finished}} on {{.Last.Host}}): {{.Last.Error}}.
-  Attempt {{.Attempts}} of {{$d.SealAttempts}}{{if .Retried}}; the next one starts automatically {{until .NextTry}}.{{else}}; no more automatic attempts, use <i>Seal now</i> below after fixing the cause.{{end}}</div>
+{{if .Retried}}
+<div class="flash warn"><b>Sealing of {{.Key}} will be tried again {{until .NextTry}}</b> (attempt {{add .Attempts 1}} of {{$d.SealAttempts}}).
+  The last attempt {{.Last.Outcome}} {{datetime .Last.Finished}} on {{.Last.Host}}: {{.Last.Error}}.</div>
+{{else}}
+<div class="flash err"><b>Sealing of {{.Key}} failed {{.Attempts}} times and is not tried again by itself.</b>
+  Last attempt {{.Last.Outcome}} {{datetime .Last.Finished}} on {{.Last.Host}}: {{.Last.Error}}. Use <i>Seal now</i> below after fixing the cause.</div>
+{{end}}
 {{end}}
 <div class="grid2">
 <section class="card">
@@ -45,7 +50,7 @@
       <td>{{.Epoch}}{{if eq .Epoch $d.Current}} <span class="tag">current</span>{{end}}</td>
       <td>{{.Storage}}</td>
       <td><span class="state state-{{.State}}">{{.State}}</span>
-        {{with index $d.Sealing (printf "%s/%s" .Storage .Epoch)}}<br><span class="small">{{.Phase}}{{if .Total}} {{bar .Done .Total}}% ({{bytes .Done}} of {{bytes .Total}}){{end}}, alive {{ago .Heartbeat}}</span>{{end}}
+        {{with index $d.Sealing (printf "%s/%s" .Storage .Epoch)}}<br><span class="small">{{.Phase}}{{if .Total}} {{bar .Done .Total}}% ({{bytes .Done}} of {{bytes .Total}}){{end}}, last heartbeat {{ago .Heartbeat}}</span>{{end}}
         {{with .Error}}<br><span class="warn small">{{.}}</span>{{end}}</td>
       <td class="num">{{bytes (index $d.Sizes (printf "%s/%s" .Storage .Epoch))}}</td><td>{{datetime .SealedAt}}</td><td>{{datetime .VerifiedAt}}</td>
       <td><code class="small">{{truncate .SHA256 16}}</code></td>
@@ -62,16 +67,20 @@
 
 <section class="card">
   <h2>Sealing attempts</h2>
-  <p class="muted">Every attempt to seal a week, with the instance that made it. An attempt whose process stopped (out of memory, crash, restart) is marked <i>interrupted</i>; a failed week is tried again {{$d.SealAttempts}} times, every {{dur $d.SealRetry}}.</p>
+  <p class="muted">The latest attempts to seal a week, with the instance that made each. A failed week is tried again {{$d.SealAttempts}} times, every {{dur $d.SealRetry}}; an attempt cut short by a restart (<i>stopped</i>) resumes after the start and does not count. Attempts made good by a later one are greyed out.</p>
   <table class="results">
-    <tr><th>Week</th><th>Storage</th><th>Host</th><th>Started</th><th>Last sign of life</th><th>Phase</th><th>Outcome</th></tr>
+    <tr><th>Week</th><th>Storage</th><th>Host</th><th>Started</th><th>Ended</th><th>Progress</th><th>Outcome</th></tr>
     {{range $d.SealRuns}}
-    <tr>
+    <tr{{if .Resolved}} class="resolved"{{end}}>
       <td>{{.Epoch}}</td><td>{{.Storage}}</td><td>{{.Host}}</td><td>{{datetime .Started}}</td>
-      <td>{{if .Running}}{{ago .Heartbeat}}{{else}}{{datetime .Finished}}{{end}}</td>
-      <td>{{.Phase}}{{if .Total}} <span class="muted small">{{bar .Done .Total}}% of {{bytes .Total}}</span>{{end}}</td>
-      <td>{{if .Running}}<span class="state state-sealing">running</span>{{else}}<span class="state state-{{.Outcome}}">{{.Outcome}}</span>{{end}}
-        {{with .Error}}<br><span class="warn small">{{.}}</span>{{end}}</td>
+      <td>{{if .Running}}<span class="muted">heartbeat {{ago .Heartbeat}}</span>{{else}}{{datetime .Finished}}{{end}}</td>
+      <td>{{if .Running}}{{.Phase}}{{if .Total}} <span class="muted small">{{bar .Done .Total}}% of {{bytes .Total}}</span>{{end}}
+        {{else if eq .Outcome "ok"}}completed
+        {{else if .Phase}}stopped while {{.Phase}}{{if .Total}} <span class="muted small">at {{bar .Done .Total}}% of {{bytes .Total}}</span>{{end}}{{end}}</td>
+      <td>{{if .Running}}<span class="state state-sealing">running</span>
+        {{else if .Resolved}}<span class="state">{{.Outcome}}</span> <span class="muted small">week sealed since</span>
+        {{else}}<span class="state state-{{.Outcome}}">{{.Outcome}}</span>{{if .Retrying}} <span class="muted small">being retried now</span>{{end}}{{end}}
+        {{if .Error}}<br><span class="small {{if or .Resolved (eq .Outcome "stopped")}}muted{{else}}warn{{end}}">{{.Error}}</span>{{end}}</td>
     </tr>
     {{else}}<tr><td colspan="7" class="muted">No attempts recorded yet.</td></tr>{{end}}
   </table>

@@ -272,11 +272,16 @@ directory (see
 
 **Failures.** Every attempt is recorded with the instance that made it, its
 phase and progress, and a heartbeat every 30 seconds. An attempt without
-heartbeat for 3 minutes was interrupted (the process ran out of memory,
-crashed or was restarted): its week is marked failed. Failed weeks are
-flagged on the dashboard and under System (*Sealing attempts*), reported by
+heartbeat for 3 minutes was interrupted (the process ran out of memory or
+crashed): its week is marked failed. Failed weeks are
+flagged on the dashboard and under System, reported by
 `hoarfrost_seal_errors` and the `HoarfrostSealFailed` alert, and sealed
-again automatically up to 3 times, an hour apart. A seal interrupted while
+again automatically up to 3 times, an hour apart; while a week is being
+sealed again it is not reported. An attempt cut short by a clean shutdown
+(a restart or an upgrade) is recorded as *stopped*: it is no failure, does
+not count against the 3 attempts and resumes right after the start.
+*Sealing attempts* under System lists the latest attempts; failed ones made
+good by a later attempt are greyed out. A seal interrupted while
 storing volumes resumes with the first volume without its captures list
 (the volumes stored before are kept); one interrupted later resumes from
 the step it reached.

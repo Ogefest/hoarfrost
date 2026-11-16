@@ -82,6 +82,10 @@ func (a *Archive) SealWith(ctx context.Context, ep epoch.ID, opts SealOptions) (
 		if errors.Is(err, ErrEmptyEpoch) {
 			info.State = index.StateOpen
 		}
+		if ctx.Err() != nil {
+			// Shutdown, not a fault of the week: it resumes after the start.
+			info.Error = "sealing stopped by shutdown; it resumes after the start"
+		}
 		// With the catalog written only verification could not finish:
 		// the week keeps its packages and is verified again, not resealed.
 		if c, cerr := a.ReadCatalog(context.WithoutCancel(ctx), ep); cerr == nil {
