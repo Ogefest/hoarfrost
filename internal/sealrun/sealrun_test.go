@@ -91,3 +91,31 @@ func TestRunsFailuresAndInterruption(t *testing.T) {
 		}
 	}
 }
+
+// TestStoppedRunIsNoFailure: a run ended by its process shutting down is
+// recorded as stopped, neither counts as a failed attempt nor clears one.
+func TestStoppedRunIsNoFailure(t *testing.T) {
+	ctx := context.Background()
+	s, now := open(t)
+	failed, _ := s.Start(ctx, "default", "2026-W46", "a", time.Time{})
+	s.Finish(ctx, failed, errors.New("disk full"))
+	*now = now.Add(time.Hour)
+	stopped, _ := s.Start(ctx, "default", "2026-W46", "a", time.Time{})
+	s.Progress(ctx, stopped, "packaging", 24, 100)
+	if err := s.Stop(ctx, stopped, "shutting down"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.Failures(ctx)
+	if w := f[Key{"default", "2026-W46"}]; err != nil || len(f) != 1 || w.Attempts != 1 || w.Last.ID != failed {
+		t.Fatalf("failures %+v %v", f, err)
+	}
+	runs, _ := s.Recent(ctx, 1)
+	if len(runs) != 1 || runs[0].Outcome != OutcomeStopped || runs[0].Error != "shutting down" || runs[0].Phase != "packaging" {
+		t.Fatalf("runs %+v", runs)
+	}
+	only, _ := s.Start(ctx, "default", "2026-W47", "a", time.Time{})
+	s.Stop(ctx, only, "shutting down")
+	if f, _ := s.Failures(ctx); len(f) != 1 {
+		t.Fatalf("a stopped run alone is a failure: %+v", f)
+	}
+}

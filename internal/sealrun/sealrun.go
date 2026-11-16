@@ -18,6 +18,10 @@ const (
 	OutcomeOK          = "ok"
 	OutcomeFailed      = "failed"
 	OutcomeInterrupted = "interrupted"
+	// OutcomeStopped is a run its own process ended on shutdown (a
+	// restart, an upgrade): not a failure, the week resumes on the next
+	// start and the run does not count against the automatic attempts.
+	OutcomeStopped = "stopped"
 )
 
 // Run is one attempt to seal a week of a storage.
@@ -112,10 +116,19 @@ func (s *Store) Beat(ctx context.Context, id int64) error {
 // replaces "interrupted" set while the process could not show it was
 // alive (e.g. the database was unreachable).
 func (s *Store) Finish(ctx context.Context, id int64, err error) error {
-	outcome, msg := OutcomeOK, sql.NullString{}
 	if err != nil {
-		outcome, msg = OutcomeFailed, sql.NullString{String: err.Error(), Valid: true}
+		return s.end(ctx, id, OutcomeFailed, err.Error())
 	}
+	return s.end(ctx, id, OutcomeOK, "")
+}
+
+// Stop records a run its process ended on shutdown (see OutcomeStopped).
+func (s *Store) Stop(ctx context.Context, id int64, reason string) error {
+	return s.end(ctx, id, OutcomeStopped, reason)
+}
+
+func (s *Store) end(ctx context.Context, id int64, outcome, reason string) error {
+	msg := sql.NullString{String: reason, Valid: reason != ""}
 	now := s.Now().UTC()
 	_, dberr := s.db.ExecContext(ctx, `UPDATE seal_runs SET outcome = $2, error = $3, finished = $4, heartbeat = $4
 		WHERE id = $1 AND (outcome IS NULL OR outcome = '`+OutcomeInterrupted+`')`, id, outcome, msg, now)
@@ -166,6 +179,7 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 
 // Failures returns the weeks whose latest finished run did not succeed,
 // with the number of failed attempts since their last successful one.
+// Stopped runs are neither failures nor successes and are left out.
 func (s *Store) Failures(ctx context.Context) (map[Key]Failure, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+cols+` FROM seal_runs WHERE outcome IS NOT NULL ORDER BY storage, epoch, started, id`)
 	if err != nil {
@@ -178,6 +192,9 @@ func (s *Store) Failures(ctx context.Context) (map[Key]Failure, error) {
 	out := map[Key]Failure{}
 	for _, r := range runs {
 		k := Key{r.Storage, r.Epoch}
+		if r.Outcome == OutcomeStopped {
+			continue
+		}
 		if r.Outcome == OutcomeOK {
 			delete(out, k)
 			continue

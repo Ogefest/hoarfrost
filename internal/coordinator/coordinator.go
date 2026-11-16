@@ -756,6 +756,9 @@ var ErrSealing = errors.New("coordinator: week is already being sealed")
 // interruptedReason explains a seal whose process stopped.
 const interruptedReason = "sealing was interrupted: the process stopped (out of memory, crash or restart)"
 
+// stoppedReason explains a seal its own process ended on shutdown.
+const stoppedReason = "stopped because the process was shutting down; it resumes after the start"
+
 // Seal closes an epoch of a storage. Unless force is set it refuses while
 // leases of the epoch are active. Every attempt is recorded (see sealrun)
 // with its progress and a heartbeat, so that a failure, or a process killed
@@ -828,7 +831,15 @@ func (c *Coordinator) finishRun(ctx context.Context, id int64, err error) {
 	if errors.Is(err, archive.ErrAlreadySealed) {
 		err = nil // nothing to do is not a failure
 	}
-	if ferr := c.runs.Finish(context.WithoutCancel(ctx), id, err); ferr != nil {
+	var ferr error
+	if err != nil && ctx.Err() != nil {
+		// The process is shutting down (restart, upgrade): the week
+		// resumes with the next start, nothing failed.
+		ferr = c.runs.Stop(context.WithoutCancel(ctx), id, stoppedReason)
+	} else {
+		ferr = c.runs.Finish(context.WithoutCancel(ctx), id, err)
+	}
+	if ferr != nil {
 		c.log.Warn("recording seal outcome", "run", id, "err", ferr)
 	}
 }
@@ -972,7 +983,9 @@ func (c *Coordinator) SealDue(ctx context.Context) error {
 
 // SealFailures returns the weeks whose latest seal attempt failed or was
 // interrupted and which are not sealed since (e.g. by a person verifying the
-// package again), with the attempts made since their last success.
+// package again), with the attempts made since their last success. A week
+// being sealed again right now is left out: its latest attempt is the
+// running one.
 func (c *Coordinator) SealFailures(ctx context.Context) (map[sealrun.Key]sealrun.Failure, error) {
 	f, err := c.runs.Failures(ctx)
 	if err != nil || len(f) == 0 {
@@ -985,6 +998,16 @@ func (c *Coordinator) SealFailures(ctx context.Context) (map[sealrun.Key]sealrun
 	for _, e := range eps {
 		if e.State == index.StateSealed || e.State == index.StateVerified {
 			delete(f, sealrun.Key{Storage: e.Storage, Epoch: e.Epoch})
+		}
+	}
+	stale := c.Now().Add(-c.opts.SealStale)
+	for k := range f {
+		alive, err := c.runs.Alive(ctx, k.Storage, k.Epoch, stale)
+		if err != nil {
+			return nil, err
+		}
+		if alive {
+			delete(f, k)
 		}
 	}
 	return f, nil

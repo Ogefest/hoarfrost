@@ -30,6 +30,7 @@ import (
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/index"
 	"github.com/ogefest/hoarfrost/internal/queue"
+	"github.com/ogefest/hoarfrost/internal/sealrun"
 	"github.com/ogefest/hoarfrost/internal/sourcestore"
 	"github.com/ogefest/hoarfrost/internal/storage"
 	"github.com/ogefest/hoarfrost/internal/testsite"
@@ -804,12 +805,37 @@ func TestInterruptedSealShown(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, body := b.get(t, "/system")
-	for _, want := range []string{"Sealing of default/2026-W43 failed", "out of memory", "Attempt 1 of 3", "Sealing attempts", "state-interrupted", "Seal now"} {
+	for _, want := range []string{"Sealing of default/2026-W43 will be tried again", "out of memory", "attempt 2 of 3", "Sealing attempts", "state-interrupted", "Seal now"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("system page lacks %q", want)
 		}
 	}
+	if strings.Contains(body, "heartbeat") {
+		t.Error("a week not being sealed shows a heartbeat")
+	}
 	if _, body := b.get(t, "/"); !strings.Contains(body, "Sealing default/2026-W43 failed") {
 		t.Error("dashboard does not flag the interrupted seal")
+	}
+
+	// Sealed by a later attempt, the failure is history: no banner, the
+	// attempt greyed out, no heartbeat or unfinished progress.
+	runs := sealrun.New(e.db)
+	id, _ := runs.Start(ctx, "default", ep, "h", time.Time{})
+	runs.Progress(ctx, id, "verifying", 98, 100)
+	runs.Finish(ctx, id, nil)
+	idx.SetEpoch(ctx, index.EpochInfo{Epoch: ep, State: index.StateVerified, WACZKey: "weekly/2026/W43/"})
+	_, body = b.get(t, "/system")
+	for _, bad := range []string{"flash warn", "flash err", "heartbeat", "98%"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("system page of a sealed week shows %q", bad)
+		}
+	}
+	for _, want := range []string{`class="resolved"`, "week sealed since", "completed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("system page lacks %q", want)
+		}
+	}
+	if _, body := b.get(t, "/"); strings.Contains(body, "Sealing default/2026-W43 failed") {
+		t.Error("dashboard flags a seal made good by a later attempt")
 	}
 }
