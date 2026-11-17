@@ -27,7 +27,7 @@
 </section>
 {{end}}
 </div>
-<table class="results">
+<div class="table-wrap"><table class="results">
   <tr><th>#</th><th>URL</th><th>Storage</th><th>Source</th><th>Engine</th><th>Tries</th><th>Week</th><th>Created</th><th></th></tr>
   {{range $d.Jobs}}
   <tr>
@@ -39,7 +39,7 @@
         {{if eq .State "leased"}}<span class="muted">{{.Worker}} until {{datetime .LeaseUntil}}</span>{{end}}</td>
   </tr>
   {{else}}<tr><td colspan="9" class="muted">Nothing here.</td></tr>{{end}}
-</table>
+</table></div>
 <nav class="pager">
   {{if gt $d.Page 1}}<a href="/queue?state={{$d.State}}&page={{sub $d.Page 1}}">← Previous</a>{{end}}
   {{if $d.More}}<a href="/queue?state={{$d.State}}&page={{add $d.Page 1}}">Next →</a>{{end}}

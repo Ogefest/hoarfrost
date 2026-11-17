@@ -25,19 +25,19 @@
   {{if or $d.Filter.Q $d.Filter.Status $d.Filter.Sort}}<a class="button" href="/sources">Clear</a>{{end}}
 </form>
 <p class="muted">{{if ne $d.Matching $d.Total}}{{$d.Matching}} of {{end}}{{$d.Total}} source(s){{if not $d.QueueAt.IsZero}} · page and queue counts from <span title="{{datetime $d.QueueAt}}">{{ago $d.QueueAt}}</span>{{end}}</p>
-<table class="results">
+<div class="table-wrap"><table class="results">
   <tr><th>Source</th><th>Inputs</th><th>Engine</th><th>Every</th><th>Last poll</th><th>Next poll</th><th class="num">Pages</th><th class="num" title="Jobs waiting for a worker (running in brackets)">Queued</th><th></th></tr>
   {{range $d.Rows}}
   <tr {{if not .Source.IsEnabled}}class="disabled"{{end}}>
     <td><a href="/sources/{{.Source.Name}}/edit"><b>{{.Source.Name}}</b></a>{{if ne .Resolved.Storage "default"}}<br><span class="tag">{{.Resolved.Storage}}</span>{{end}}</td>
-    <td class="small">{{range .Source.Feeds}}<div>RSS {{.}}</div>{{end}}{{range .Source.Sitemaps}}<div>sitemap {{.}}</div>{{end}}{{range .Source.URLs}}<div>URL {{.}}</div>{{end}}</td>
+    <td class="small urls">{{range .Source.Feeds}}<div>RSS {{.}}</div>{{end}}{{range .Source.Sitemaps}}<div>sitemap {{.}}</div>{{end}}{{range .Source.URLs}}<div>URL {{.}}</div>{{end}}</td>
     <td>{{.Resolved.Engine}}{{with .Resolved.Options.Fallback}} → {{.}}{{end}}</td>
     <td>{{dur .Resolved.Poll}}</td>
     <td>{{if .Status.LastPoll.IsZero}}never{{else}}<span title="{{datetime .Status.LastPoll}}">{{ago .Status.LastPoll}}</span><br><span class="muted">{{.Status.Found}} found, {{.Status.New}} new</span>{{end}}{{with .Status.Error}}<br><span class="warn">{{.}}</span>{{end}}{{if and .Status.Error (not .Status.LastSuccess.IsZero)}}<br><span class="muted">last success <span title="{{datetime .Status.LastSuccess}}">{{ago .Status.LastSuccess}}</span></span>{{end}}</td>
     <td>{{if .Source.IsEnabled}}{{until .NextPoll}}{{else}}<span class="muted">disabled</span>{{end}}</td>
     <td class="num">{{.Stats.Pages}}{{if .Stats.Fallbacks}}<br><span class="small {{if gt .Stats.FallbackRatio 0.3}}warn{{else}}muted{{end}}" title="Pages captured again with the fallback engine because the first capture had too little text; a high share suggests switching the source to that engine">{{pct .Stats.FallbackRatio}} fallback</span>{{end}}{{if .Stats.Short}}<br><span class="muted small" title="Pages with under 200 characters of text">{{.Stats.Short}} short</span>{{end}}</td>
     <td class="num">{{if .Queue.Queued}}{{.Queue.Queued}}{{else}}<span class="muted">0</span>{{end}}{{with .Queue.Leased}}<br><span class="muted small">({{.}} running)</span>{{end}}</td>
-    <td class="nowrap">
+    <td class="row-actions">
       <a class="button" href="/sources/{{.Source.Name}}/edit">Edit</a>
       <button hx-post="/sources/{{.Source.Name}}/test" hx-target="next .result" hx-swap="innerHTML">Test</button>
       <form method="post" action="/sources/{{.Source.Name}}/poll" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="back" value="{{$d.Back}}"><button>Poll now</button></form>
@@ -46,7 +46,7 @@
     </td>
   </tr>
   {{else}}<tr><td colspan="9" class="muted">{{if $d.Total}}No source matches the filter.{{else}}No sources yet. <a href="/sources/new">Add the first one</a>: an RSS/Atom feed, a sitemap or a list of URLs.{{end}}</td></tr>{{end}}
-</table>
+</table></div>
 {{if gt $d.Pages 1}}
 <nav class="pager">
   {{if gt $d.Filter.Page 1}}<a href="{{query "/sources" "q" $d.Filter.Q "status" $d.Filter.Status "sort" $d.Filter.Sort "page" (sub $d.Filter.Page 1)}}">← Previous</a>{{end}}
