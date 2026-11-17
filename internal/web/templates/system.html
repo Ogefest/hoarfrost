@@ -43,7 +43,7 @@
 
 <section class="card">
   <h2>Weeks</h2>
-  <table class="results">
+  <div class="table-wrap"><table class="results">
     <tr><th>Week</th><th>Storage</th><th>State</th><th class="num">Size</th><th>Sealed</th><th>Verified</th><th>SHA-256</th><th></th></tr>
     {{range $d.Epochs}}
     <tr>
@@ -63,13 +63,13 @@
       </td>
     </tr>
     {{else}}<tr><td colspan="8" class="muted">No data yet.</td></tr>{{end}}
-  </table>
+  </table></div>
 </section>
 
 <section class="card">
   <h2>Sealing attempts</h2>
   <p class="muted">The latest attempts to seal a week, with the instance that made each. A failed week is tried again {{$d.SealAttempts}} times, every {{dur $d.SealRetry}}; an attempt cut short by a restart (<i>stopped</i>) resumes after the start and does not count. Attempts made good by a later one are greyed out.</p>
-  <table class="results">
+  <div class="table-wrap"><table class="results">
     <tr><th>Week</th><th>Storage</th><th>Host</th><th>Started</th><th>Ended</th><th>Progress</th><th>Outcome</th></tr>
     {{range $d.SealRuns}}
     <tr{{if .Resolved}} class="resolved"{{end}}>
@@ -84,12 +84,12 @@
         {{if .Error}}<br><span class="small {{if or .Resolved (eq .Outcome "stopped")}}muted{{else}}warn{{end}}">{{.Error}}</span>{{end}}</td>
     </tr>
     {{else}}<tr><td colspan="7" class="muted">No attempts recorded yet.</td></tr>{{end}}
-  </table>
+  </table></div>
 </section>
 
 <section class="card">
   <h2>Users</h2>
-  <table class="results">
+  <div class="table-wrap"><table class="results">
     <tr><th>Login</th><th>Role</th><th>Created</th><th></th></tr>
     {{range $d.Users}}
     <tr><td>{{.Login}}</td><td>{{.Role}}</td><td>{{date .Created}}</td>
@@ -103,7 +103,7 @@
         <form method="post" action="/system/users/{{.Login}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger">Delete</button></form>
       {{end}}</td></tr>
     {{end}}
-  </table>
+  </table></div>
   <form method="post" action="/system/users" class="row">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input name="login" placeholder="login" required>

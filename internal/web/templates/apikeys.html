@@ -40,7 +40,7 @@
   <p class="muted small">Specification for client generators: <a href="/api/openapi.yaml">openapi.yaml</a>. Guide: <code>docs/api.md</code>.</p>
 </section>
 </div>
-<table class="results">
+<div class="table-wrap"><table class="results">
   <tr><th>Application</th><th>Created</th><th>Created by</th><th>Last used</th><th>Expires</th><th></th></tr>
   {{range $d.Keys}}
   <tr {{if .Expired $d.Now}}class="disabled"{{end}}>
@@ -52,5 +52,5 @@
     <td class="nowrap"><form method="post" action="/system/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger">{{icon "trash-2"}}Revoke</button></form></td>
   </tr>
   {{else}}<tr><td colspan="6" class="muted">No API keys yet.</td></tr>{{end}}
-</table>
+</table></div>
 {{end}}

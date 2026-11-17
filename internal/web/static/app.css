@@ -144,6 +144,14 @@ table.results { background: var(--card); border: 1px solid var(--line); border-r
 table.results th { background: var(--soft); }
 table.results tr:hover > td { background: color-mix(in srgb, var(--soft) 55%, transparent); }
 .card table.results { box-shadow: none; }
+/* A results table never gets wider than the panels above it: long values
+   wrap, and what still does not fit scrolls inside the frame. */
+.table-wrap { max-width: 100%; overflow-x: auto; margin-bottom: 20px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card .table-wrap { box-shadow: none; }
+.table-wrap > table.results { margin-bottom: 0; border: 0; border-radius: 0; box-shadow: none; }
+td.urls { overflow-wrap: anywhere; min-width: 200px; }
+td.row-actions { min-width: 170px; }
+td.row-actions .button, td.row-actions button { margin: 0 2px 4px 0; }
 tr.disabled { opacity: .55; }
 td.when { white-space: nowrap; color: var(--muted); width: 1%; font-size: 13px; }
 table.results td > a:first-child:not(.button) { color: var(--fg); font-weight: 500; }
@@ -226,7 +234,6 @@ pre.json { font-size: 12px; max-height: 40vh; overflow: auto; background: var(--
   .top .brand span, .who a span { display: none; }
   .top nav a { padding: 6px 9px; }
   .grid2 { grid-template-columns: 1fr; }
-  table.results { display: block; overflow-x: auto; }
   .search input[type=search] { min-width: 100%; }
   .search > * { flex: 1 1 140px; }
   td.when { white-space: normal; width: 76px; font-size: 12px; }
