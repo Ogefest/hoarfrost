@@ -521,6 +521,62 @@ func TestOpenWeeksIndexedAfterStart(t *testing.T) {
 	}
 }
 
+// TestSealedWeeksIndexedAfterStart checks that Start does not wait for a
+// sealed week missing from the index (e.g. after a database restore): Run
+// rebuilds it in the background and reports the progress meanwhile.
+func TestSealedWeeksIndexedAfterStart(t *testing.T) {
+	e := newEnv(t, basicSources, time.Minute)
+	ctx := context.Background()
+	cf, err := e.coord.Record(ctx, "", "", "upload", "upload", func(r *recorder.Recorder) error {
+		info, err := r.WriteResource(ctx, recorder.ResourceRecord{URI: "https://x.pl/a", ContentType: "text/html", Body: []byte("<title>Up</title><p>pieczec</p>")})
+		if err != nil {
+			return err
+		}
+		_, err = r.WriteMetadata(recorder.PageInfo{URL: "https://x.pl/a", RecordID: info.ID, Title: "Up", Text: "pieczec"})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.coord.Seal(ctx, "", cf.Epoch, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.idx.DeleteEpoch(ctx, "", cf.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.coord.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := e.idx.CountMatches(ctx, "pieczec"); n != 0 {
+		t.Fatal("Start rebuilt a sealed week")
+	}
+	if st := e.coord.IndexingStatus(); !st.Active || st.Phase != coordinator.IndexingSealed {
+		t.Fatalf("indexing not reported after Start: %+v", st)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); e.coord.Run(runCtx, time.Hour) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st := e.coord.IndexingStatus()
+		if !st.Active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("indexing not finished: %+v", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n, _ := e.idx.CountMatches(ctx, "pieczec"); n != 1 {
+		t.Fatal("sealed week not rebuilt by Run")
+	}
+	if info, _ := e.idx.Epoch(ctx, "", cf.Epoch); info.State != index.StateVerified && info.State != index.StateSealed {
+		t.Fatalf("rebuilt week %+v", info)
+	}
+}
+
 func TestRecordUploadAndSnapshots(t *testing.T) {
 	e := newEnv(t, basicSources, time.Minute)
 	ctx := context.Background()

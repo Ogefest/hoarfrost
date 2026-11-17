@@ -100,9 +100,10 @@ type Coordinator struct {
 	epochMu sync.Mutex
 	runs    *sealrun.Store
 
-	mu      sync.Mutex
-	workers map[string]*WorkerStatus
-	sealing map[sealrun.Key]bool // weeks this process is sealing
+	mu       sync.Mutex
+	workers  map[string]*WorkerStatus
+	sealing  map[sealrun.Key]bool // weeks this process is sealing
+	indexing IndexingStatus       // indexing of weeks from storage after the start
 
 	overview overviewCache
 }
@@ -1024,8 +1025,9 @@ func (c *Coordinator) SealPolicy() (attempts int, retry time.Duration) {
 	return c.opts.SealAttempts, c.opts.SealRetry
 }
 
-// Start prepares storage and the index: README, configuration snapshot and
-// rebuilding of missing index parts of sealed weeks.
+// Start prepares storage: README and configuration snapshot. The index is
+// brought up to date with storage by Run, in the background, so that the
+// web UI comes up at once; IndexingStatus tells how far it got.
 func (c *Coordinator) Start(ctx context.Context) error {
 	for _, arc := range c.lib.All() {
 		if err := arc.WriteReadme(ctx); err != nil {
@@ -1035,18 +1037,79 @@ func (c *Coordinator) Start(ctx context.Context) error {
 	if err := c.SnapshotSources(ctx); err != nil {
 		return fmt.Errorf("coordinator: config snapshot: %w", err)
 	}
-	// Only sealed weeks are checked here: that is quick. Open weeks are
-	// indexed by Run, after the web UI and workers have started.
+	c.mu.Lock()
+	c.indexing = IndexingStatus{Active: true, Phase: IndexingSealed, Since: c.Now()}
+	c.mu.Unlock()
+	return nil
+}
+
+// Phases of the indexing after the start.
+const (
+	IndexingSealed = "sealed weeks" // checking catalogs, rebuilding weeks missing from the index
+	IndexingOpen   = "open weeks"   // indexing incoming captures missing from the index
+)
+
+// IndexingStatus is how far the index has been brought up to date with
+// storage after the start. Until it is done, search, the archive and
+// deduplication may miss captures of weeks not indexed yet.
+type IndexingStatus struct {
+	Active  bool
+	Phase   string
+	Storage string
+	// Epoch is the week being indexed now; "" while weeks found consistent
+	// are being checked.
+	Epoch      epoch.ID
+	EpochSince time.Time
+	// Checked of Total weeks of Storage in Phase.
+	Checked, Total int
+	Since          time.Time
+}
+
+// IndexingStatus returns how far the indexing after the start got.
+func (c *Coordinator) IndexingStatus() IndexingStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.indexing
+}
+
+func (c *Coordinator) setIndexing(fn func(*IndexingStatus)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(&c.indexing)
+}
+
+// reindexOptions reports the progress of a startup reindex in phase.
+func (c *Coordinator) reindexOptions(storageName, phase string, weeks archive.Weeks) archive.ReindexOptions {
+	c.setIndexing(func(s *IndexingStatus) {
+		s.Active, s.Phase, s.Storage, s.Epoch, s.Checked, s.Total = true, phase, storageName, "", 0, 0
+	})
+	return archive.ReindexOptions{
+		Weeks: weeks,
+		Begin: func(ep epoch.ID) {
+			c.setIndexing(func(s *IndexingStatus) { s.Epoch, s.EpochSince = ep, c.Now() })
+		},
+		Progress: func(_ epoch.ID, done, total int) {
+			c.setIndexing(func(s *IndexingStatus) { s.Epoch, s.Checked, s.Total = "", done, total })
+		},
+	}
+}
+
+// reindexSealedWeeks rebuilds the index of sealed weeks missing from it or
+// out of date (e.g. after a database restore). Checking a consistent week
+// is quick; rebuilding one reads its packages.
+func (c *Coordinator) reindexSealedWeeks(ctx context.Context) {
 	for _, arc := range c.lib.All() {
-		rep, err := arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.SealedWeeks})
+		rep, err := arc.Reindex(ctx, c.reindexOptions(arc.Name, IndexingSealed, archive.SealedWeeks))
 		if err != nil {
-			return fmt.Errorf("coordinator: reindex of %s: %w", arc.Name, err)
+			if ctx.Err() == nil {
+				c.log.Error("reindex of sealed weeks", "storage", arc.Name, "err", err)
+			}
+			continue
 		}
 		if len(rep.Epochs) > 0 {
 			c.log.Info("index rebuilt from storage", "storage", arc.Name, "epochs", rep.Epochs)
 		}
 	}
-	return nil
 }
 
 // reindexOpenWeeks indexes incoming captures of open weeks missing from
@@ -1057,7 +1120,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 func (c *Coordinator) reindexOpenWeeks(ctx context.Context) {
 	for _, arc := range c.lib.All() {
 		start := c.Now()
-		rep, err := arc.Reindex(ctx, archive.ReindexOptions{Weeks: archive.OpenWeeks})
+		rep, err := arc.Reindex(ctx, c.reindexOptions(arc.Name, IndexingOpen, archive.OpenWeeks))
 		if err != nil {
 			if ctx.Err() == nil {
 				c.log.Error("indexing open weeks", "storage", arc.Name, "err", err)
@@ -1101,8 +1164,13 @@ func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 	sealed := make(chan struct{})
 	go func() {
 		defer close(sealed)
-		// Weeks are sealed only once their incoming files are indexed.
+		// Weeks are sealed only once the index is up to date with storage.
+		c.reindexSealedWeeks(ctx)
 		c.reindexOpenWeeks(ctx)
+		c.setIndexing(func(s *IndexingStatus) { *s = IndexingStatus{} })
+		if ctx.Err() == nil {
+			c.log.Info("index up to date with storage")
+		}
 		c.runSealing(ctx, tick)
 	}()
 	defer func() { <-sealed }()

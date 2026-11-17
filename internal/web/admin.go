@@ -148,6 +148,9 @@ type systemData struct {
 	SealRuns     []sealRunRow
 	SealAttempts int
 	SealRetry    time.Duration
+	// Indexing is the week being indexed from storage after the start, as
+	// "storage/epoch".
+	Indexing string
 }
 
 // sealRunRow is a seal attempt in the list of attempts. Resolved marks an
@@ -175,6 +178,18 @@ func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
 	if d.Epochs, err = s.idx.Epochs(ctx); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// A sealed week being rebuilt is gone from the index until it is done:
+	// it is listed anyway, as being indexed.
+	if st := s.Coord.IndexingStatus(); st.Active && st.Epoch != "" {
+		d.Indexing = st.Storage + "/" + string(st.Epoch)
+		found := false
+		for _, e := range d.Epochs {
+			found = found || (e.Storage == st.Storage && e.Epoch == st.Epoch)
+		}
+		if !found {
+			d.Epochs = append(d.Epochs, index.EpochInfo{Storage: st.Storage, Epoch: st.Epoch, State: "indexing"})
+		}
 	}
 	sort.SliceStable(d.Epochs, func(i, j int) bool { return d.Epochs[i].Epoch > d.Epochs[j].Epoch })
 	d.Sizes = map[string]int64{}
@@ -307,6 +322,10 @@ func (s *Server) sealEpoch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reindex(w http.ResponseWriter, r *http.Request) {
+	if s.Coord.IndexingStatus().Active {
+		redirectErr(w, r, "/system", errors.New("the index is still being brought up to date after the start; try again when it is done"))
+		return
+	}
 	opts := archive.ReindexOptions{Force: r.PostFormValue("force") == "1"}
 	if e := r.PostFormValue("epoch"); e != "" {
 		ep, err := epoch.Parse(e)

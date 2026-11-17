@@ -839,3 +839,44 @@ func TestInterruptedSealShown(t *testing.T) {
 		t.Error("dashboard flags a seal made good by a later attempt")
 	}
 }
+
+// TestIndexingNotice checks that the web UI works while the index is being
+// brought up to date after the start, says so on every page, and drops the
+// notice once the indexing is done.
+func TestIndexingNotice(t *testing.T) {
+	e := newEnv(t)
+	b := e.admin(t)
+	ctx := context.Background()
+	if err := e.coord.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/", "/archive", "/system"} {
+		resp, body := b.get(t, p)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Indexing archive data from storage") {
+			t.Fatalf("%s: %d, no indexing notice", p, resp.StatusCode)
+		}
+	}
+	resp, _ := b.post(t, "/system/reindex", url.Values{"csrf": {b.csrf}})
+	if !strings.Contains(resp.Header.Get("Location"), "err=") {
+		t.Fatal("manual reindex started during the indexing after the start")
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); e.coord.Run(runCtx, time.Hour) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, body := b.get(t, "/indexing")
+		if strings.TrimSpace(body) == `<div id="indexing"></div>` {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("indexing notice still shown: %s", body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, body := b.get(t, "/"); strings.Contains(body, "Indexing archive data") {
+		t.Fatal("notice shown after the indexing")
+	}
+}

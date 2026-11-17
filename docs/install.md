@@ -90,9 +90,10 @@ The version is also shown in the footer of every page.
    ```
 
 Migrations run when the new version starts. When a release changes the
-layout of the search index, the index is rebuilt from the archive on start,
-which takes a while on a large archive; the archive itself is never
-rewritten. Going back to an older
+layout of the search index, the index is rebuilt from the archive after the
+start, which takes a while on a large archive: the web UI works meanwhile and
+shows the progress, but search may miss weeks not rebuilt yet. The archive
+itself is never rewritten. Going back to an older
 version after a migration needs the database backup.
 
 `HOARFROST_VERSION=latest` follows every release automatically on

@@ -24,6 +24,10 @@ type ReindexOptions struct {
 	Epoch epoch.ID
 	// Force rebuilds epochs even when the index looks consistent.
 	Force bool
+	// Begin is called before a week is rebuilt (a sealed one) or its
+	// incoming files are listed (an open one); weeks found consistent are
+	// skipped without it.
+	Begin func(ep epoch.ID)
 	// Progress is called after each epoch.
 	Progress func(ep epoch.ID, done, total int)
 	// Weeks selects sealed weeks, open weeks or both (the default).
@@ -126,6 +130,9 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 				return rep, err
 			}
 			if opts.Force || info.SHA256 != c.SHA256 || info.WACZKey != c.Location() {
+				if opts.Begin != nil {
+					opts.Begin(ep)
+				}
 				scanned, err := a.reindexSealed(ctx, c)
 				if err != nil {
 					return rep, fmt.Errorf("archive: reindex %s: %w", ep, err)
@@ -136,6 +143,9 @@ func (a *Archive) Reindex(ctx context.Context, opts ReindexOptions) (*ReindexRep
 				}
 			}
 		} else {
+			if opts.Begin != nil {
+				opts.Begin(ep)
+			}
 			n, err := a.reindexOpen(ctx, ep, opts.Force)
 			if err != nil {
 				return rep, fmt.Errorf("archive: reindex %s: %w", ep, err)

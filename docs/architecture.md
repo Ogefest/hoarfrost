@@ -383,10 +383,15 @@ weeks:
 Open weeks are found from the directories of `incoming/` (a delimited
 listing), so the files of sealed weeks, kept there until their retention
 passes, are never listed. Listing the files of an open week still takes
-minutes in a large S3 bucket, so at startup only sealed weeks are checked
-before the web UI starts; open weeks are indexed in the background, before
-the first seal, holding the seal lock of the archive so that a week is not
-sealed while it is being indexed.
+minutes in a large S3 bucket, and rebuilding many sealed weeks (e.g. after
+a database restore) reads all their volumes, so at startup the web UI comes
+up first and the index is brought up to date in the background: sealed
+weeks, then open weeks, then the first seal. Open weeks are indexed holding
+the seal lock of the archive, so that a week is not sealed while it is
+being indexed. Until it is done every page shows a notice with the phase,
+the weeks checked so far and the week being indexed, which System also
+marks in the list of weeks; search and the archive may miss captures of
+weeks not indexed yet, and *Reindex from storage* is refused.
 
 A sealed week with a volume missing from storage is not rebuilt (and not
 taken for an open week): it is marked failed with the missing key, and
