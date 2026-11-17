@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 
 	viewer("GET /{$}", s.dashboard)
 	viewer("GET /dashboard/live", s.dashboardLive)
+	viewer("GET /indexing", s.indexingStatus)
 	viewer("GET /archive", s.archivePage)
 	viewer("GET /page/{id}", s.pageView)
 	viewer("GET /page/{id}/preview", s.preview)

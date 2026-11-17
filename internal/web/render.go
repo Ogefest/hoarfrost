@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ogefest/hoarfrost/internal/auth"
+	"github.com/ogefest/hoarfrost/internal/coordinator"
 	"github.com/ogefest/hoarfrost/internal/version"
 )
 
@@ -178,6 +179,9 @@ type view struct {
 	Message string
 	Error   string
 	Data    any
+	// Indexing is set while the index is being brought up to date with
+	// storage after the start; the layout shows it on every page.
+	Indexing *coordinator.IndexingStatus
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, page, title string, data any) {
@@ -190,7 +194,8 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 		http.Error(w, "unknown page "+page, http.StatusInternalServerError)
 		return
 	}
-	v := view{Title: title, User: userFrom(r), Path: r.URL.Path, Message: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"), Data: data}
+	v := view{Title: title, User: userFrom(r), Path: r.URL.Path, Message: r.URL.Query().Get("msg"), Error: r.URL.Query().Get("err"), Data: data,
+		Indexing: s.indexing()}
 	if sess := sessionFrom(r); sess != nil {
 		v.CSRF = sess.CSRF
 	}
@@ -207,6 +212,26 @@ func (s *Server) renderStatus(w http.ResponseWriter, r *http.Request, status int
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	w.Write(buf.Bytes())
+}
+
+// indexing returns the indexing after the start while it runs.
+func (s *Server) indexing() *coordinator.IndexingStatus {
+	if s.Coord == nil {
+		return nil
+	}
+	if st := s.Coord.IndexingStatus(); st.Active {
+		return &st
+	}
+	return nil
+}
+
+// indexingStatus renders the indexing notice for htmx polling; once the
+// indexing is done it renders an empty element that stops polling.
+func (s *Server) indexingStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.pages["dashboard.html"].ExecuteTemplate(w, "indexing", view{User: userFrom(r), Indexing: s.indexing()}); err != nil {
+		s.Log.Error("render fragment", "block", "indexing", "err", err)
+	}
 }
 
 // fragment renders a named block without the layout (htmx partials).

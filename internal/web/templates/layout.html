@@ -33,8 +33,17 @@
 <main>
 {{if .Message}}<div class="flash ok">{{.Message}}</div>{{end}}
 {{if .Error}}<div class="flash err">{{.Error}}</div>{{end}}
+{{if .User.Login}}{{template "indexing" .}}{{end}}
 {{template "content" .}}
 </main>
 <footer>hoarfrost {{version}} · data in WARC/WACZ, readable without this application</footer>
 </body>
 </html>{{end}}
+
+{{define "indexing"}}
+{{with .Indexing}}<div id="indexing" class="flash warn" hx-get="/indexing" hx-trigger="every 5s" hx-swap="outerHTML">
+  <b>Indexing archive data from storage</b>
+  ({{.Phase}}{{if .Storage}} of {{.Storage}}{{end}}{{if .Total}}: {{.Checked}} of {{.Total}} checked{{end}}){{with .Epoch}}, now week <b>{{.}}</b> (started {{ago $.Indexing.EpochSince}}){{end}}.
+  Until it is done, search and the archive may miss captures of weeks not indexed yet, and weeks are not sealed.
+</div>{{else}}<div id="indexing"></div>{{end}}
+{{end}}

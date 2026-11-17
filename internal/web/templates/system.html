@@ -50,6 +50,7 @@
       <td>{{.Epoch}}{{if eq .Epoch $d.Current}} <span class="tag">current</span>{{end}}</td>
       <td>{{.Storage}}</td>
       <td><span class="state state-{{.State}}">{{.State}}</span>
+        {{if eq $d.Indexing (printf "%s/%s" .Storage .Epoch)}}<br><span class="small">being indexed from storage</span>{{end}}
         {{with index $d.Sealing (printf "%s/%s" .Storage .Epoch)}}<br><span class="small">{{.Phase}}{{if .Total}} {{bar .Done .Total}}% ({{bytes .Done}} of {{bytes .Total}}){{end}}, last heartbeat {{ago .Heartbeat}}</span>{{end}}
         {{with .Error}}<br><span class="warn small">{{.}}</span>{{end}}</td>
       <td class="num">{{bytes (index $d.Sizes (printf "%s/%s" .Storage .Epoch))}}</td><td>{{datetime .SealedAt}}</td><td>{{datetime .VerifiedAt}}</td>

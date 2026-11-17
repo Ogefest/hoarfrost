@@ -356,7 +356,9 @@ index is rebuilt from storage on the first start.
   are identical across backends).
 - The database holds two schemas. `archive_index` (the index) is derived:
   drop it (`DROP SCHEMA archive_index CASCADE`) and run `hoarfrost reindex`,
-  or just restart; missing epochs are rebuilt at startup.
+  or just restart; missing epochs are rebuilt in the background after the
+  start, while the web UI already works (a notice on every page shows the
+  progress).
 - Schema `app` holds users, tokens, the queue and sources; back it up with
   `pg_dump -n app`. Losing it is not fatal:
   feeds and sitemaps are polled again and `seen_urls` is rebuilt from the
