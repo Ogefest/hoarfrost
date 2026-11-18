@@ -567,3 +567,9 @@ func (a *Archive) packagedKeys(ctx context.Context, c *Catalog) (map[string]bool
 	}
 	return out, nil
 }
+
+// VolumeSums is the SHA256SUMS file listing vols, as sealing writes it.
+func VolumeSums(vols []Volume) []byte { return volumeSums(vols) }
+
+// VolumeCollection is the collection.json listing vols, as sealing writes it.
+func VolumeCollection(ep epoch.ID, vols []Volume) ([]byte, error) { return volumeCollection(ep, vols) }
