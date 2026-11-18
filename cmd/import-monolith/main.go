@@ -63,6 +63,8 @@ type config struct {
 	batch, workers, minSize int
 	extractors              int
 	move, moveOnly          bool
+	keepDuplicates          bool
+	only                    []entry // -only: the files to import, instead of the manifest
 	manifestFile            string
 	manifest                []entry
 }
@@ -87,6 +89,7 @@ func run() error {
 	flag.BoolVar(&c.moveOnly, "move-only", false, "only move weeks already sealed in -staging (needs no database); implies -move")
 	dry := flag.Bool("dry-run", false, "only list how many pages each week has")
 	rescan := flag.Bool("rescan", false, "rebuild the manifest of press_media files")
+	only := flag.String("only", "", "file listing the files to import (YYYYMMDD/HHMMSS_<id>.html, one per line or the 2nd column of a TSV), read from the day folders instead of the manifest; also keeps every save of a URL and gives pages without a URL the address urn:legacy:<path>")
 	flag.Parse()
 	if c.media == "" {
 		c.media = filepath.Join(*base, "press_media")
@@ -110,6 +113,13 @@ func run() error {
 	eps, err := parseWeeks(*weeks)
 	if err != nil {
 		return err
+	}
+	if *only != "" {
+		if c.only, err = readOnly(c.media, *only); err != nil {
+			return err
+		}
+		c.keepDuplicates = true
+		fmt.Fprintf(os.Stderr, "%d file(s) listed in %s\n", len(c.only), *only)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -172,7 +182,9 @@ func (c *config) week(ctx context.Context, ep epoch.ID, dry bool) error {
 		}
 		if c.manifest == nil {
 			var err error
-			if c.manifest, err = loadManifest(ctx, c.media, c.manifestFile); err != nil {
+			if c.only != nil {
+				c.manifest = c.only
+			} else if c.manifest, err = loadManifest(ctx, c.media, c.manifestFile); err != nil {
 				return err
 			}
 		}
@@ -221,6 +233,7 @@ func (c *config) importWeek(ctx context.Context, ep epoch.ID, items []monolith.I
 	rep, err := monolith.Import(ctx, items, &monolith.DirArchive{Dir: c.media, Tmp: x, SevenZip: sevenZip}, monolith.Options{
 		Root: c.staging, Spool: filepath.Join(c.staging, ".import-monolith-spool"), Epoch: ep, Source: c.source,
 		BatchSize: c.batch, MinSize: c.minSize, Workers: c.workers, Extractors: c.extractors,
+		KeepDuplicates: c.keepDuplicates, FallbackURL: c.only != nil,
 		Progress: func(done, total int) {
 			fmt.Fprintf(os.Stderr, "\r%s: %d/%d pages, %s", ep, done, total, time.Since(started).Round(time.Second))
 		},

@@ -67,3 +67,36 @@ func TestParseWeeks(t *testing.T) {
 		t.Fatalf("%v %v", eps, err)
 	}
 }
+
+func TestReadOnly(t *testing.T) {
+	media := t.TempDir()
+	write := func(rel string, mtime time.Time) {
+		p := filepath.Join(media, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("<html>"+rel+"</html>"), 0o644)
+		os.Chtimes(p, mtime, mtime)
+	}
+	late := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	early := late.Add(-48 * time.Hour)
+	write("20260304/120000_2.html", late)
+	write("20260302/120000_1.html", early)
+	list := filepath.Join(t.TempDir(), "list.tsv")
+	os.WriteFile(list, []byte("week\tpath\tsize\treason\n"+
+		"2026-W10\t20260304/120000_2.html\t10\tx\n"+
+		"2026-W10\t20260302/120000_1.html\t10\tx\n"+
+		"2026-W10\t20260302/120000_1.html\t10\tx\n"), 0o644)
+	got, err := readOnly(media, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != 1 || !got[0].Saved.Equal(early) || got[1].Path != "20260304/120000_2.html" {
+		t.Fatalf("entries %+v", got)
+	}
+	if w := weekEntries(got, epoch.MustParse("2026-W10")); len(w) != 2 {
+		t.Fatalf("week entries %+v", w)
+	}
+	os.WriteFile(list, []byte("20260305/090000_3.html\n"), 0o644)
+	if _, err := readOnly(media, list); err == nil {
+		t.Fatal("missing file accepted")
+	}
+}

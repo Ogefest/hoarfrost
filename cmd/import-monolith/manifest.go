@@ -205,3 +205,42 @@ func weekEntries(all []entry, ep epoch.ID) []entry {
 	}
 	return out
 }
+
+// readOnly lists the files named in list (a path per line, or a TSV whose
+// second column is the path; other lines are ignored) from the day folders
+// of media, dated like the manifest: by the time the file was written.
+func readOnly(media, list string) ([]entry, error) {
+	f, err := os.Open(list)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []entry
+	seen := map[int64]bool{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		path := sc.Text()
+		if cols := strings.Split(path, "\t"); len(cols) > 1 {
+			path = cols[1]
+		}
+		path = strings.TrimSpace(path)
+		id, ok := pageID(path)
+		if !ok || !dayName.MatchString(filepath.Dir(path)) {
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(media, filepath.FromSlash(path)))
+		if err != nil {
+			return nil, err
+		}
+		seen[id] = true
+		out = append(out, entry{ID: id, Path: path, Saved: info.ModTime().UTC(), Size: info.Size()})
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Saved.Before(out[j].Saved) })
+	return out, nil
+}

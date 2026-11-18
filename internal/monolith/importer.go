@@ -70,6 +70,12 @@ type Options struct {
 	// Extractors bounds archives prepared at the same time (default 2).
 	Extractors int
 	Progress   func(done, total int)
+	// KeepDuplicates imports every save of a URL in the week, not only
+	// the first.
+	KeepDuplicates bool
+	// FallbackURL gives a page with no URL known and none in the page the
+	// address urn:legacy:<path> instead of refusing it.
+	FallbackURL bool
 }
 
 // Report summarizes an import.
@@ -130,7 +136,7 @@ func Import(ctx context.Context, items []Item, open Opener, o Options) (*Report,
 		switch {
 		case w.done[it.ID]:
 			rep.Resumed++
-		case it.URL != "" && urls[it.URL]:
+		case !o.KeepDuplicates && it.URL != "" && urls[it.URL]:
 			rep.Skipped++ // the same URL saved twice in one week
 		default:
 			urls[it.URL] = true
@@ -291,7 +297,11 @@ func preparePage(it Item, open Opener, o Options) page {
 		// No URL from the source system: the page's own canonical or
 		// og:url.
 		if p.URL = legacy.PageURL(body); p.URL == "" {
-			err = errors.New("no URL known and none in the page")
+			if o.FallbackURL {
+				p.URL = "urn:legacy:" + it.Path
+			} else {
+				err = errors.New("no URL known and none in the page")
+			}
 		}
 	}
 	if err != nil {

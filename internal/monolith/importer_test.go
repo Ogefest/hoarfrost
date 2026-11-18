@@ -176,3 +176,60 @@ func TestImportPipeline(t *testing.T) {
 		t.Errorf("released %d files", len(op.released))
 	}
 }
+
+// TestImportKeepDuplicatesAndFallbackURL: with KeepDuplicates a later save
+// of a URL is imported too, and with FallbackURL a page without any URL
+// gets urn:legacy:<path>.
+func TestImportKeepDuplicatesAndFallbackURL(t *testing.T) {
+	ep := epoch.MustParse("2026-W42")
+	t0 := ep.Start().Add(10 * time.Hour)
+	files := mapOpener{
+		"20261013/100000_1.html": []byte(`<html><title>First</title><p>first save</p></html>`),
+		"20261013/110000_2.html": []byte(`<html><title>Second</title><p>second save</p></html>`),
+		"20261013/120000_3.html": []byte(`<html><title>Nameless</title><p>no address anywhere</p></html>`),
+	}
+	items := []Item{
+		{ID: "1", URL: "https://news.example/a", Captured: t0, Path: "20261013/100000_1.html"},
+		{ID: "2", URL: "https://news.example/a", Captured: t0.Add(time.Hour), Path: "20261013/110000_2.html"},
+		{ID: "3", Captured: t0.Add(2 * time.Hour), Path: "20261013/120000_3.html"},
+	}
+	root := t.TempDir()
+	o := Options{Root: root, Spool: filepath.Join(root, ".spool"), Epoch: ep, Source: "press_media", Workers: 1}
+
+	strict, err := Import(context.Background(), append([]Item(nil), items...), files, Options{Root: t.TempDir(), Spool: t.TempDir(), Epoch: ep, Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strict.Pages != 1 || strict.Skipped != 1 || len(strict.Errors) != 1 {
+		t.Fatalf("default rules: %+v", strict)
+	}
+
+	o.KeepDuplicates, o.FallbackURL = true, true
+	rep, err := Import(context.Background(), append([]Item(nil), items...), files, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Pages != 3 || rep.Skipped != 0 || len(rep.Errors) != 0 {
+		t.Fatalf("keep duplicates: %+v", rep)
+	}
+	dir := filepath.Join(root, filepath.FromSlash(ep.IncomingPrefix()))
+	entries, _ := os.ReadDir(dir)
+	urls := map[string]int{}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".warc.gz") {
+			continue
+		}
+		f, _ := os.Open(filepath.Join(dir, e.Name()))
+		cf, err := recorder.Scan(bufio.NewReader(f), e.Name(), ep)
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range cf.Pages {
+			urls[p.URL]++
+		}
+	}
+	if urls["https://news.example/a"] != 2 || urls["urn:legacy:20261013/120000_3.html"] != 1 {
+		t.Fatalf("pages: %v", urls)
+	}
+}
