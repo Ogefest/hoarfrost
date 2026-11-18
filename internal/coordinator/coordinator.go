@@ -1160,12 +1160,14 @@ func (c *Coordinator) Run(ctx context.Context, tick time.Duration) {
 	if tick == 0 {
 		tick = 30 * time.Second
 	}
-	go c.writeMissingIndexes(ctx)
 	sealed := make(chan struct{})
 	go func() {
 		defer close(sealed)
 		// Weeks are sealed only once the index is up to date with storage.
 		c.reindexSealedWeeks(ctx)
+		// Page tables are written from the index, so only after the sealed
+		// weeks it lacked (or held out of date) are rebuilt.
+		go c.writeMissingIndexes(ctx)
 		c.reindexOpenWeeks(ctx)
 		c.setIndexing(func(s *IndexingStatus) { *s = IndexingStatus{} })
 		if ctx.Err() == nil {
