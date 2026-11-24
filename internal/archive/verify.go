@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ogefest/hoarfrost/internal/cdxj"
 	"github.com/ogefest/hoarfrost/internal/epoch"
@@ -83,26 +84,75 @@ func (a *Archive) VerifyWith(ctx context.Context, ep epoch.ID, opts VerifyOption
 		vr.locations[p.Key] = true
 		vr.total += p.Size
 	}
-	if len(pkgs) == 0 {
-		vr.add(ep.CatalogKey(), "lists no package")
-	}
-	if cat.Parquet != nil {
-		a.verifyParquet(ctx, cat.Parquet, vr.add)
-	}
-	if len(cat.Volumes) > 0 {
-		if err := vr.checkVolumeFiles(); err != nil {
+	log := a.Log.With("epoch", ep)
+	start := 0
+	if cp := a.loadVerifyCheckpoint(cat); cp != nil {
+		// The checks before the packages were made by the earlier run and
+		// their problems are in the checkpoint.
+		vr.restore(cp)
+		if err := vr.relist(pkgs[:cp.Verified]); err != nil {
 			return nil, err
 		}
+		start = cp.Verified
+		log.Warn("resuming an interrupted verification", "verified", cp.Verified, "volumes", len(pkgs),
+			"done", humanSize(vr.done), "total", humanSize(vr.total))
+	} else {
+		if len(pkgs) == 0 {
+			vr.add(ep.CatalogKey(), "lists no package")
+		}
+		if cat.Parquet != nil {
+			a.verifyParquet(ctx, cat.Parquet, vr.add)
+		}
+		if len(cat.Volumes) > 0 {
+			if err := vr.checkVolumeFiles(); err != nil {
+				return nil, err
+			}
+		}
 	}
-	for _, p := range pkgs {
+	started := a.Now()
+	plog := newProgressLog(log, a.Now, "verification progress", vr.done)
+	vr.plog = plog
+	for i := start; i < len(pkgs); i++ {
+		p := pkgs[i]
+		t, before := a.Now(), vr.done
 		if err := vr.verifyPackage(p); err != nil {
 			return nil, err
+		}
+		d := a.Now().Sub(t)
+		log.Info("volume verified", "volume", fmt.Sprintf("%d/%d", i+1, len(pkgs)), "key", p.Key, "took", d.Round(time.Second),
+			"rate", rate(vr.done-before, d), "problems", len(vr.v.Problems)+vr.v.MoreProblems)
+		if i+1 < len(pkgs) {
+			vr.saveCheckpoint(i + 1)
 		}
 	}
 	if err := vr.checkIndex(); err != nil {
 		return nil, err
 	}
-	return a.finishVerify(ctx, cat, v)
+	res, err := a.finishVerify(ctx, cat, v)
+	if err == nil {
+		a.removeVerifyCheckpoint(cat)
+		log.Info("verification finished", "ok", res.OK, "problems", len(res.Problems)+res.MoreProblems,
+			"took", a.Now().Sub(started).Round(time.Second))
+	}
+	return res, err
+}
+
+// relist fills the captures listed by packages verified by an earlier run.
+func (vr *verifier) relist(pkgs []Volume) error {
+	for _, p := range pkgs {
+		if p.CapturesList == "" {
+			continue
+		}
+		m, err := vr.a.ReadManifest(vr.ctx, p.CapturesList)
+		if err != nil {
+			// The earlier run read it: a failure now is not a finding.
+			return fmt.Errorf("archive: %s: %w", p.CapturesList, err)
+		}
+		for _, c := range m.Captures {
+			vr.listed[c.Key] = c.Size
+		}
+	}
+	return nil
 }
 
 // checkVolumeFiles compares the SHA256SUMS file and the collection with
@@ -191,7 +241,7 @@ func (vr *verifier) verifyPackage(p Volume) error {
 		vr.add(p.Key, "%v", err)
 		pkg = nil
 	}
-	sum, err := vr.scan(pkg, rd.Size())
+	sum, err := vr.scan(pkg)
 	if err != nil {
 		return err
 	}
@@ -251,6 +301,7 @@ type verifier struct {
 	listed      map[string]int64
 	hasLists    bool
 	done, total int64 // bytes of the packages read before the current one, of all
+	plog        *progressLog
 
 	// The package being read.
 	pkgKey   string
@@ -311,7 +362,7 @@ func (p *posReader) Read(b []byte) (int, error) {
 
 // scan reads the package once from start to end and returns its SHA-256.
 // With pkg nil (the zip directory is unreadable) it only hashes.
-func (vr *verifier) scan(pkg *wacz.Reader, size int64) (string, error) {
+func (vr *verifier) scan(pkg *wacz.Reader) (string, error) {
 	stream, _, err := storage.Stream(vr.ctx, vr.a.Storage, vr.pkgKey)
 	if err != nil {
 		return "", err
@@ -368,18 +419,25 @@ func (vr *verifier) scan(pkg *wacz.Reader, size int64) (string, error) {
 				vr.add(e.name, "ends after %d of %d bytes", body.pos, e.size)
 			}
 			vr.sums[e.name] = wacz.EntrySum{SHA256: hex.EncodeToString(eh.Sum(nil)), Size: body.pos}
-			if vr.opts.Progress != nil {
-				vr.opts.Progress(src.pos, size)
-			}
+			vr.progress(src.pos)
 		}
 	}
 	if _, err := io.Copy(io.Discard, src); err != nil {
 		return "", fmt.Errorf("archive: read %s: %w", vr.pkgKey, err)
 	}
-	if vr.opts.Progress != nil {
-		vr.opts.Progress(vr.done+src.pos, vr.total)
-	}
+	vr.progress(src.pos)
 	return hex.EncodeToString(src.h.Sum(nil)), nil
+}
+
+// progress reports the bytes of the week read, pos of them in the
+// current package.
+func (vr *verifier) progress(pos int64) {
+	if vr.opts.Progress != nil {
+		vr.opts.Progress(vr.done+pos, vr.total)
+	}
+	if vr.plog != nil {
+		vr.plog.update(vr.done+pos, vr.total, "volume", path.Base(vr.pkgKey))
+	}
 }
 
 // segmentHasher checks that the bytes of a WARC entry are exactly the

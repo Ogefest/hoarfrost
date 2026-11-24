@@ -12,8 +12,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1101,5 +1103,58 @@ func TestSealKeepsVolumesTheIndexPointsTo(t *testing.T) {
 	storage.PutBytes(ctx, e.store, ep.VolumeCapturesKey(3), []byte("x"))
 	if _, err := e.arc.Seal(ctx, ep); err == nil || !strings.Contains(err.Error(), "resolve by hand") {
 		t.Fatalf("seal: %v", err)
+	}
+}
+
+// openCounter counts packages opened for reading.
+type openCounter struct {
+	storage.Storage
+	mu     sync.Mutex
+	opened map[string]int
+}
+
+func (o *openCounter) Open(ctx context.Context, key string) (storage.Reader, error) {
+	o.mu.Lock()
+	o.opened[path.Base(key)]++
+	o.mu.Unlock()
+	return o.Storage.Open(ctx, key)
+}
+
+// TestVerifyResumesWithNextVolume: a verification stopped while reading a
+// volume of a large week goes on with that volume, not from the start,
+// and finds what a complete verification finds.
+func TestVerifyResumesWithNextVolume(t *testing.T) {
+	e := newEnv(t)
+	e.arc.VolumeSize = 1
+	e.populate()
+	ctx := context.Background()
+	e.arc.Storage = &flakyStore{Storage: e.store, failRead: map[string]bool{"-0003.wacz": true}}
+	if _, err := e.arc.Seal(ctx, ep); err == nil {
+		t.Fatal("verification should fail at volume 3")
+	}
+	cp, _ := filepath.Glob(filepath.Join(e.dir, "spool", "verify-*"+string(ep)+".json"))
+	if len(cp) != 1 {
+		t.Fatalf("checkpoints %v", cp)
+	}
+	counter := &openCounter{Storage: e.store, opened: map[string]int{}}
+	e.arc.Storage = counter
+	cat, err := e.arc.Seal(ctx, ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cat.State != index.StateVerified || counter.opened["2026-W41-0001.wacz"] != 0 || counter.opened["2026-W41-0002.wacz"] != 0 ||
+		counter.opened["2026-W41-0003.wacz"] == 0 {
+		t.Fatalf("state %s, opened %v", cat.State, counter.opened)
+	}
+	if left, _ := filepath.Glob(filepath.Join(e.dir, "spool", "verify-*")); len(left) != 0 {
+		t.Fatalf("checkpoint left: %v", left)
+	}
+	full, err := e.arc.Verify(ctx, ep)
+	if err != nil || !full.OK {
+		t.Fatalf("full verification %+v %v", full, err)
+	}
+	r := cat.Verification
+	if r.Records != full.Records || r.Scanned != full.Scanned || r.Captures != full.Captures || r.Captures != 3 {
+		t.Fatalf("resumed %+v, full %+v", r, full)
 	}
 }

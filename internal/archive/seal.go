@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ogefest/hoarfrost/internal/epoch"
 	"github.com/ogefest/hoarfrost/internal/index"
@@ -266,13 +267,17 @@ func (a *Archive) sealVolumes(ctx context.Context, ep epoch.ID, opts SealOptions
 			total += c.Size
 		}
 	}
+	log := a.Log.With("epoch", ep)
 	if len(done) > 0 {
-		a.Log.Warn("resuming an interrupted seal", "epoch", ep, "volumes", len(done))
+		log.Warn("resuming an interrupted seal", "volumes", len(done))
 	}
+	log.Info("listing incoming capture files", "prefix", ep.IncomingPrefix())
+	t := a.Now()
 	objs, err := a.Storage.List(ctx, ep.IncomingPrefix())
 	if err != nil {
 		return nil, err
 	}
+	log.Info("incoming files listed", "objects", len(objs), "took", a.Now().Sub(t).Round(time.Millisecond))
 	keys := map[string]string{} // capture name -> incoming key
 	var inputs []wacz.Input
 	for _, o := range objs {
@@ -293,10 +298,12 @@ func (a *Archive) sealVolumes(ctx context.Context, ep epoch.ID, opts SealOptions
 	if len(inputs) == 0 && len(done) == 0 {
 		return nil, ErrEmptyEpoch
 	}
+	t = a.Now()
 	indexed, err := a.Index.Files(ctx, a.name(), ep)
 	if err != nil {
 		return nil, err
 	}
+	log.Info("indexed capture files read", "files", len(indexed), "took", a.Now().Sub(t).Round(time.Millisecond))
 	for loc := range indexed {
 		if strings.HasPrefix(loc, "incoming/") && keys[path.Base(loc)] != loc {
 			return nil, fmt.Errorf("archive: indexed capture %s missing from storage", loc)
@@ -318,26 +325,42 @@ func (a *Archive) sealVolumes(ctx context.Context, ep epoch.ID, opts SealOptions
 			written += c.Size
 		}
 	}
-	for _, group := range splitVolumes(wacz.Order(inputs, a.ConcatBySource), a.volumeSize()) {
+	groups := splitVolumes(wacz.Order(inputs, a.ConcatBySource), a.volumeSize())
+	volumes := len(done) + len(groups)
+	log.Info("packaging", "captures", len(inputs), "size", humanSize(total-written), "volumes", len(groups),
+		"stored before", len(done), "week", humanSize(total))
+	plog := newProgressLog(log, a.Now, "packaging progress", written)
+	for _, group := range groups {
 		n := len(done) + 1
 		base := written
-		m, err := a.packVolume(ctx, ep, n, group, keys, indexed, spool, func(d int64) {
+		m, err := a.packVolume(ctx, ep, n, volumes, group, keys, indexed, spool, func(d int64) {
 			written = base + d
 			opts.progress(PhasePackaging, written, total)
+			plog.update(written, total, "volume", fmt.Sprintf("%d/%d", n, volumes))
 		})
 		if err != nil {
 			return nil, fmt.Errorf("archive: volume %d: %w", n, err)
 		}
 		done = append(done, m)
 	}
+	log.Info("packaging done", "volumes", len(done), "took", a.Now().Sub(plog.start).Round(time.Second))
 	return a.finishSeal(ctx, ep, done, false, opts)
 }
 
 // packVolume builds volume n in the spool directory, stores it with one
 // request and then stores its captures list, which marks it complete.
-func (a *Archive) packVolume(ctx context.Context, ep epoch.ID, n int, inputs []wacz.Input, keys map[string]string,
+func (a *Archive) packVolume(ctx context.Context, ep epoch.ID, n, volumes int, inputs []wacz.Input, keys map[string]string,
 	indexed map[string]int64, spool string, progress func(done int64)) (*Manifest, error) {
 	key := ep.VolumeKey(n)
+	log := a.Log.With("epoch", ep, "volume", fmt.Sprintf("%d/%d", n, volumes))
+	var size int64
+	for _, in := range inputs {
+		size += in.Size
+	}
+	log.Info("building volume", "captures", len(inputs), "size", humanSize(size))
+	started := a.Now()
+	inputs, stop := prefetch(ctx, inputs, prefetchWorkers, prefetchBudget, prefetchMaxFile)
+	defer stop()
 	m := &Manifest{Epoch: ep, Package: key, Created: a.Now().UTC()}
 	onCapture := func(cf recorder.CaptureFile, p wacz.Placement) error {
 		key := keys[cf.Name]
@@ -379,23 +402,29 @@ func (a *Archive) packVolume(ctx context.Context, ep epoch.ID, n int, inputs []w
 	if err := bw.Flush(); err != nil {
 		return nil, err
 	}
+	stop()
+	built := a.Now()
+	log.Info("volume built", "size", humanSize(res.Size), "took", built.Sub(started).Round(time.Second), "rate", rate(size, built.Sub(started)))
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
 	if res.Size > maxSinglePut {
 		// A capture file larger than a volume: some S3 servers cannot
 		// assemble the multipart upload this needs.
-		a.Log.Warn("volume too large for one upload request, storing it in parts", "epoch", ep, "volume", key, "size", res.Size)
+		log.Warn("volume too large for one upload request, storing it in parts", "key", key, "size", res.Size)
 	}
 	if err := a.Storage.Put(ctx, key, f, res.Size); err != nil {
 		return nil, err
 	}
+	uploaded := a.Now()
 	m.SHA256, m.Size, m.WARCFiles = res.SHA256, res.Size, len(res.Files)
 	m.Records, m.Pages, m.CDXJLines = res.Records, res.Pages, res.CDXJLines
 	if err := a.WriteManifest(ctx, ep.VolumeCapturesKey(n), m); err != nil {
 		return nil, err
 	}
-	a.Log.Info("volume stored", "epoch", ep, "volume", key, "size", m.Size, "captures", len(m.Captures))
+	log.Info("volume stored", "key", key, "size", humanSize(m.Size), "captures", len(m.Captures),
+		"upload took", uploaded.Sub(built).Round(time.Second), "upload rate", rate(m.Size, uploaded.Sub(built)),
+		"total took", a.Now().Sub(started).Round(time.Second))
 	return m, nil
 }
 
@@ -420,16 +449,23 @@ func (a *Archive) finishSeal(ctx context.Context, ep epoch.ID, packages []*Manif
 		cat.Revisits += m.Revisits
 		cat.Pages += m.Pages
 	}
+	log := a.Log.With("epoch", ep)
 	opts.progress(PhaseRelocating, 0, int64(len(moves)))
+	log.Info("moving index entries to the volumes", "captures", len(moves))
+	t := a.Now()
 	if err := a.Index.RelocateCaptures(ctx, a.name(), ep, moves); err != nil {
 		return nil, err
 	}
+	log.Info("index entries moved", "took", a.Now().Sub(t).Round(time.Second))
 	opts.progress(PhasePageTable, 0, int64(cat.Pages))
+	log.Info("writing the page table", "pages", cat.Pages)
+	t = a.Now()
 	parquetInfo, err := a.writeParquet(ctx, ep)
 	if err != nil {
 		return nil, fmt.Errorf("archive: page table: %w", err)
 	}
 	cat.Parquet = parquetInfo
+	log.Info("page table written", "took", a.Now().Sub(t).Round(time.Second))
 
 	if single {
 		m := packages[0]
@@ -461,6 +497,7 @@ func (a *Archive) finishSeal(ctx context.Context, ep epoch.ID, packages []*Manif
 	if err := a.Index.SetEpoch(ctx, cat.epochInfo(a.name())); err != nil {
 		return nil, err
 	}
+	log.Info("catalog written, verifying the stored volumes", "volumes", len(packages), "size", humanSize(cat.Size))
 	v, err := a.VerifyWith(ctx, ep, VerifyOptions{Progress: func(done, total int64) { opts.progress(PhaseVerifying, done, total) }})
 	if err != nil {
 		return cat, err
