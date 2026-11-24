@@ -177,6 +177,7 @@ CREATE TABLE page_items (
   data      JSONB NOT NULL
 );
 CREATE INDEX page_items_page ON page_items(page_id);
+CREATE INDEX page_items_parent ON page_items(parent_id);
 CREATE INDEX page_items_type ON page_items(format, type);
 
 -- Open Graph and Twitter Card properties, one row per value.
@@ -332,6 +333,13 @@ func Open(ctx context.Context, url, schemaName string) (*DB, error) {
 	return &DB{db: db, dedup: newDedupCache(dedupCacheSize)}, nil
 }
 
+// addedIndexes are indexes added to the schema without a new version, so
+// that a large index is not rebuilt from storage for them.
+// page_items_parent: without it, removing an epoch scans page_items once
+// for every item removed (the parent_id cascade), which never finishes on
+// a large index.
+const addedIndexes = `CREATE INDEX IF NOT EXISTS page_items_parent ON page_items(parent_id);`
+
 func prepare(ctx context.Context, db *sql.DB, schemaName string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -351,7 +359,10 @@ func prepare(ctx context.Context, db *sql.DB, schemaName string) error {
 			return err
 		}
 		if v == schemaVersion {
-			return nil
+			if _, err := tx.ExecContext(ctx, addedIndexes); err != nil {
+				return err
+			}
+			return tx.Commit()
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+pgdb.Ident(schemaName)+` CASCADE; CREATE SCHEMA `+pgdb.Ident(schemaName)); err != nil {
