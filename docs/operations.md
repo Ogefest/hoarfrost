@@ -246,6 +246,22 @@ passes, and no lease of the week is active, the coordinator:
 
 Sealing runs beside source polling, so a long seal does not stop captures.
 
+**Resuming.** Every stored volume is a checkpoint: a seal stopped by a
+crash, a restart or an upgrade goes on with the next volume. Verification
+writes a checkpoint after each volume it has read
+(`<HOARFROST_DATA_DIR>/spool/verify-<storage>-<week>.json`), so an
+interrupted verification goes on with the next volume too, as long as the
+catalog is the same; the file is removed when verification finishes.
+
+**Logs.** A seal logs each step with its duration: listing `incoming/`,
+building and uploading each volume (`volume built`, `volume stored`, with
+rates), moving index entries, writing the page table and verifying each
+volume (`volume verified`). Packaging and verification also log
+`packaging progress` / `verification progress` once a minute with the
+bytes done, the rate and the estimated remaining time. Capture files are
+fetched eight at a time ahead of packaging (up to 256 MiB in memory), as a
+week of a million small files would otherwise wait on each request.
+
 **Resources.** The week is never copied to local disk, one volume at a
 time is. The spool directory (`<HOARFROST_DATA_DIR>/spool/seal-<week>`)
 holds the volume being built and its sorted index and page lines: about
@@ -253,7 +269,7 @@ holds the volume being built and its sorted index and page lines: about
 it is emptied when the week is sealed again after a crash. Keep it on disk,
 not on `tmpfs`, which is memory. Memory grows with the number of capture
 files and pages of the week (about a kilobyte each), not with its size or
-number of records; uploading a volume reads it from the file without
+number of records, plus up to 256 MiB of capture files fetched ahead; uploading a volume reads it from the file without
 buffering it. A volume of up to 5 GiB is one S3 PUT request, so
 `HOARFROST_VOLUME_SIZE` is at most 4.5 GiB (the indexes add a few percent).
 Only a single capture file larger than that makes a larger volume, which
